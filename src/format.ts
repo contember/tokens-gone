@@ -1,9 +1,12 @@
 export function fmtMoney(n: number): string {
+  if (n === 0) return '$0';
+  if (n >= 1000) return `$${Math.round(n).toLocaleString('en-US')}`;
   if (n >= 100) return `$${n.toFixed(0)}`;
   if (n >= 10) return `$${n.toFixed(1)}`;
   if (n >= 1) return `$${n.toFixed(2)}`;
   if (n >= 0.01) return `$${n.toFixed(3)}`;
-  return `$${n.toFixed(4)}`;
+  if (n >= 0.0001) return `$${n.toFixed(4)}`;
+  return '<$0.0001';
 }
 
 export function fmtTokens(n: number): string {

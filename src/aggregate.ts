@@ -119,6 +119,185 @@ export function weekBucket(t: number): number {
   return d.getTime();
 }
 
+export type DayStat = {
+  /** Local-time YYYY-MM-DD. */
+  date: string;
+  /** ms since epoch at local midnight (sort/filter key). */
+  ms: number;
+  cost: number;
+  count: number;
+  total: number;
+  /** Per-model cost split — populated for tooltip drill-down. */
+  byModel: Map<string, number>;
+};
+
+/**
+ * Build a per-day timeline of cost + request counts over the entries.
+ * Output is dense — days with zero activity are included so the heatmap
+ * has empty cells in their proper spots.
+ */
+export function daily(entries: Entry[], from?: number, to?: number): DayStat[] {
+  if (entries.length === 0) return [];
+  const map = new Map<string, DayStat>();
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i]!;
+    const k = dayKey(e.t);
+    let d = map.get(k);
+    if (!d) {
+      const dt = new Date(e.t);
+      dt.setHours(0, 0, 0, 0);
+      d = {
+        date: k,
+        ms: dt.getTime(),
+        cost: 0,
+        count: 0,
+        total: 0,
+        byModel: new Map(),
+      };
+      map.set(k, d);
+    }
+    const c = costForEntry(e);
+    d.cost += c;
+    d.count++;
+    d.total += e.i + e.o + e.cc + e.cr;
+    d.byModel.set(e.m, (d.byModel.get(e.m) ?? 0) + c);
+  }
+
+  // Densify so the heatmap can render zero-cost cells. Range covers either
+  // the explicit [from, to] window or the data's own extent.
+  const sorted = [...map.values()].sort((a, b) => a.ms - b.ms);
+  if (sorted.length === 0) return [];
+  const first = from != null ? startOfDay(from) : sorted[0]!.ms;
+  const last = to != null ? startOfDay(to - 1) : sorted[sorted.length - 1]!.ms;
+  const out: DayStat[] = [];
+  for (let d = first; d <= last; d += 86400000) {
+    const k = isoDateFromMs(d);
+    out.push(
+      map.get(k) ?? {
+        date: k,
+        ms: d,
+        cost: 0,
+        count: 0,
+        total: 0,
+        byModel: new Map(),
+      },
+    );
+  }
+  return out;
+}
+
+function startOfDay(ms: number): number {
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function isoDateFromMs(ms: number): string {
+  const d = new Date(ms);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+export type ActivityStats = {
+  activeDays: number;
+  totalDays: number;
+  currentStreak: number;
+  longestStreak: number;
+  mostActiveDay: { date: string; cost: number } | null;
+};
+
+/**
+ * Compute streak-style stats from a densified day series. Streak rules
+ * match Claude's: consecutive active days count, today doesn't break the
+ * current streak just because it's incomplete.
+ */
+export function activityStats(days: DayStat[]): ActivityStats {
+  if (days.length === 0) {
+    return {
+      activeDays: 0,
+      totalDays: 0,
+      currentStreak: 0,
+      longestStreak: 0,
+      mostActiveDay: null,
+    };
+  }
+  let activeDays = 0;
+  let longestStreak = 0;
+  let runningStreak = 0;
+  let currentStreak = 0;
+  let mostActive: DayStat | null = null;
+
+  for (let i = 0; i < days.length; i++) {
+    const d = days[i]!;
+    const active = d.count > 0;
+    if (active) {
+      activeDays++;
+      runningStreak++;
+      if (runningStreak > longestStreak) longestStreak = runningStreak;
+    } else {
+      runningStreak = 0;
+    }
+    if (!mostActive || d.cost > mostActive.cost) mostActive = d;
+  }
+
+  // Current streak: walk back from the most recent day. Today with 0 cost
+  // is "not yet active" not "broken" — so we skip it.
+  const today = startOfDay(Date.now());
+  let i = days.length - 1;
+  if (days[i] && days[i]!.ms === today && days[i]!.count === 0) i--;
+  while (i >= 0 && days[i]!.count > 0) {
+    currentStreak++;
+    i--;
+  }
+
+  return {
+    activeDays,
+    totalDays: days.length,
+    currentStreak,
+    longestStreak,
+    mostActiveDay: mostActive && mostActive.cost > 0
+      ? { date: mostActive.date, cost: mostActive.cost }
+      : null,
+  };
+}
+
+/**
+ * 24-bucket distribution of cost by hour of local day. Useful for showing
+ * "when do you actually work" — Claude's own activity report excludes this.
+ */
+export function hourlyDistribution(entries: Entry[]): number[] {
+  const buckets = new Array<number>(24).fill(0);
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i]!;
+    const h = new Date(e.t).getHours();
+    buckets[h]! += costForEntry(e);
+  }
+  return buckets;
+}
+
+/** Most recent activity timestamp across entries (for burn-rate calc). */
+export function recentBurn(entries: Entry[], windowMs = 60 * 60 * 1000): {
+  cost: number;
+  reqs: number;
+  perHour: number;
+} {
+  if (entries.length === 0) return { cost: 0, reqs: 0, perHour: 0 };
+  // Entries are sorted ascending by t.
+  const last = entries[entries.length - 1]!.t;
+  const cutoff = last - windowMs;
+  let cost = 0;
+  let reqs = 0;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]!;
+    if (e.t < cutoff) break;
+    cost += costForEntry(e);
+    reqs++;
+  }
+  return { cost, reqs, perHour: cost * (3600_000 / windowMs) };
+}
+
 export type SessionInfo = {
   s: string;
   project: string;
