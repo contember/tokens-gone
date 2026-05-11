@@ -12,7 +12,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "dev": "bun run --hot server/cli.ts --no-open",
+    "dev": "concurrently -k -n srv,web -c blue,magenta 'bun run dev:server' 'bun run dev:client'",
+    "dev:server": "bun run --hot server/cli.ts --no-open",
     "dev:client": "vite",
     "build": "vite build && node scripts/build-cli.mjs",
     "build:cli": "node scripts/build-cli.mjs",
@@ -48,6 +49,7 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "bun-types": "latest",
+    "concurrently": "^9.2.1",
     "esbuild": "^0.25.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

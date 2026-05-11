@@ -57,8 +57,9 @@ runs on plain Node 20+.
 
 ```bash
 bun install
-bun run dev                # backend on :27821
-bun run dev:client         # vite on :5173 (proxied to backend)
+bun run dev                # backend on :27821 + vite on :5173 (open :5173)
+bun run dev:server         # just the backend (--hot)
+bun run dev:client         # just vite
 
 bun test
 bun run typecheck

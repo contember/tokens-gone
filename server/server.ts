@@ -223,7 +223,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     if (!existsSync(dist)) {
       res.writeHead(200, { 'content-type': 'text/plain' });
       res.end(
-        `tokens-gone: dist/ not built.\n\nRun "bun run build" (production) or run "bun run dev" and "bun run dev:client" in parallel for development.\n`,
+        `tokens-gone: dist/ not built.\n\nRun "bun run build" (production) or "bun run dev" (development — starts server + Vite, open http://localhost:5173).\n`,
       );
       return;
     }
