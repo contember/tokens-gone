@@ -30,6 +30,13 @@ export type Entry = {
    * Stripped from the API response — internal to the server.
    */
   h?: string;
+  /**
+   * Source of the entry. Absence is treated as `'cc'` (Claude Code) to keep
+   * the field off the wire for the common case — only codex/opencode entries
+   * pay the extra byte. Useful for routing pricing rules and (eventually)
+   * filtering in the UI.
+   */
+  src?: 'cc' | 'codex' | 'opencode';
 };
 
 /**

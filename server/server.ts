@@ -13,12 +13,18 @@ import { extname, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { scan, defaultClaudeProjectsDir, defaultCachePath } from './scanner.ts';
+import { scanCodex, defaultCodexSessionsDir, codexSessionsExist } from './codex.ts';
 import type { Entry, SessionMeta } from './types.ts';
 
 type Cache = {
   entries: Entry[];
   sessionMeta: Record<string, SessionMeta>;
   stats: { files: number; cachedFiles: number; parsedLines: number; tookMs: number };
+  /** Per-source stats — useful for the UI to surface "scanned N codex files" etc. */
+  sources: {
+    cc: { files: number; cachedFiles: number; parsedLines: number; tookMs: number };
+    codex: { files: number; cachedFiles: number; parsedLines: number; tookMs: number };
+  };
   generatedAt: number;
 };
 
@@ -100,8 +106,34 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   async function refresh(): Promise<void> {
     if (inFlight) return inFlight;
     inFlight = (async () => {
-      const result = await scan();
-      cached = { ...result, generatedAt: Date.now() };
+      // Codex is opt-in by directory existence — if the user doesn't run
+      // codex, the scan resolves instantly to an empty result.
+      const [ccResult, codexResult] = await Promise.all([
+        scan(),
+        scanCodex(),
+      ]);
+
+      // Merge: entries get concatenated and re-sorted by timestamp (each
+      // scanner returns sorted, but the merged stream needs one final pass).
+      // Session ID spaces don't collide in practice (both are UUIDs), so
+      // sessionMeta merges cleanly with codex preferred for codex-owned IDs.
+      const entries = [...ccResult.entries, ...codexResult.entries];
+      entries.sort((a, b) => a.t - b.t);
+      const sessionMeta = { ...ccResult.sessionMeta, ...codexResult.sessionMeta };
+      const stats = {
+        files: ccResult.stats.files + codexResult.stats.files,
+        cachedFiles: ccResult.stats.cachedFiles + codexResult.stats.cachedFiles,
+        parsedLines: ccResult.stats.parsedLines + codexResult.stats.parsedLines,
+        tookMs: Math.max(ccResult.stats.tookMs, codexResult.stats.tookMs),
+      };
+
+      cached = {
+        entries,
+        sessionMeta,
+        stats,
+        sources: { cc: ccResult.stats, codex: codexResult.stats },
+        generatedAt: Date.now(),
+      };
       inFlight = null;
     })();
     return inFlight;
@@ -133,9 +165,11 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         entries: clientEntries,
         sessionMeta: cached!.sessionMeta,
         stats: cached!.stats,
+        sources: cached!.sources,
         generatedAt: cached!.generatedAt,
         projectsDir: defaultClaudeProjectsDir(),
         cachePath: defaultCachePath(),
+        codexSessionsDir: codexSessionsExist() ? defaultCodexSessionsDir() : null,
       });
       return;
     }
@@ -205,12 +239,21 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   console.log(`tokens-gone ready on ${url}`);
   console.log(`Projects: ${defaultClaudeProjectsDir()}`);
   console.log(`Cache:    ${defaultCachePath()}`);
+  if (codexSessionsExist()) {
+    console.log(`Codex:    ${defaultCodexSessionsDir()}`);
+  }
 
   refresh()
     .then(() => {
       if (cached) {
+        const cc = cached.sources.cc;
+        const cx = cached.sources.codex;
+        const parts = [
+          `cc: ${cc.files} files (${cc.cachedFiles} cached)`,
+        ];
+        if (cx.files > 0) parts.push(`codex: ${cx.files} files (${cx.cachedFiles} cached)`);
         console.log(
-          `Loaded ${cached.entries.length} entries from ${cached.stats.files} files (${cached.stats.cachedFiles} cached) in ${cached.stats.tookMs}ms`,
+          `Loaded ${cached.entries.length} entries — ${parts.join(', ')} in ${cached.stats.tookMs}ms`,
         );
       }
     })
