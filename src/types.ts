@@ -17,25 +17,30 @@ export type SessionMeta = {
   firstPrompt?: string;
 };
 
+export type ProviderStats = {
+  files: number;
+  cachedFiles: number;
+  parsedLines: number;
+  tookMs: number;
+};
+
+export type ProviderInfo = {
+  id: 'cc' | 'codex' | 'opencode';
+  label: string;
+  dataDir: string;
+  cachePath: string;
+  detected: boolean;
+  stats: ProviderStats;
+};
+
 export type ApiData = {
   entries: Entry[];
   sessionMeta: Record<string, SessionMeta>;
-  stats: {
-    files: number;
-    cachedFiles: number;
-    parsedLines: number;
-    tookMs: number;
-  };
-  /** Per-source breakdown — present from server v0.2+. Optional for backward compat. */
-  sources?: {
-    cc: { files: number; cachedFiles: number; parsedLines: number; tookMs: number };
-    codex: { files: number; cachedFiles: number; parsedLines: number; tookMs: number };
-  };
+  /** Aggregated across all providers. Same shape every provider reports. */
+  stats: ProviderStats;
+  /** One entry per registered provider, detected or not. */
+  providers: ProviderInfo[];
   generatedAt: number;
-  projectsDir: string;
-  cachePath: string;
-  /** Set when codex sessions are detected; null otherwise. */
-  codexSessionsDir?: string | null;
 };
 
 /** Tool that produced an entry. `'cc'` = Claude Code, default for legacy entries. */

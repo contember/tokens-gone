@@ -1,9 +1,8 @@
 /**
- * Codex CLI session scanner.
+ * Codex CLI provider.
  *
  * Reads `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` — one JSONL per
- * Codex session — and produces the same `Entry` shape the Claude scanner
- * emits, so the dashboard can treat both sources uniformly.
+ * Codex session.
  *
  * Codex JSONL anatomy (relevant subset):
  *  - `session_meta` (once): session id, cwd, originator, cli_version
@@ -23,53 +22,44 @@
  * sessions parse cleanly but contribute zero entries.
  */
 
-import { readdir, stat, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { createReadStream, existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { dirname, join, sep } from 'node:path';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
-import type { Entry, SessionMeta } from './types.ts';
+import type { Entry, SessionMeta } from '../types.ts';
+import type {
+  Provider,
+  ProviderScanOptions,
+  ProviderScanResult,
+  FileCacheRecord,
+} from './types.ts';
+import { emptyResult } from './types.ts';
+import {
+  decideFileState,
+  listJsonlFiles,
+  loadCache,
+  pMap,
+  saveCache,
+  type FileInfo,
+} from './base.ts';
 
 const CACHE_VERSION = 1;
 const MAX_PROMPT_CHARS = 200;
 
-type CodexFileCacheRecord = {
-  path: string;
-  size: number;
-  mtimeMs: number;
-  entries: Entry[];
+type CodexExtra = {
   sessionId?: string;
   firstPrompt?: string;
 };
 
-type CodexCacheFile = {
-  version: number;
-  files: Record<string, CodexFileCacheRecord>;
-};
-
-export type CodexScanResult = {
-  entries: Entry[];
-  sessionMeta: Record<string, SessionMeta>;
-  stats: {
-    files: number;
-    cachedFiles: number;
-    parsedLines: number;
-    tookMs: number;
-  };
-};
-
-export function defaultCodexSessionsDir(): string {
+function defaultDataDir(): string {
   return process.env.CODEX_HOME
     ? join(process.env.CODEX_HOME, 'sessions')
     : join(homedir(), '.codex', 'sessions');
 }
 
-export function defaultCodexCachePath(): string {
+function defaultCachePath(): string {
   return join(homedir(), '.cache', 'tokens-gone', 'codex-cache.json');
-}
-
-export function codexSessionsExist(dir = defaultCodexSessionsDir()): boolean {
-  return existsSync(dir);
 }
 
 function projectNameFromCwd(cwd: string): string {
@@ -77,35 +67,6 @@ function projectNameFromCwd(cwd: string): string {
   // non-empty segment.
   const parts = cwd.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? 'unknown';
-}
-
-async function listJsonlFiles(root: string): Promise<string[]> {
-  const out: string[] = [];
-  async function walk(dir: string): Promise<void> {
-    let entries: { name: string; isDirectory: boolean; isFile: boolean }[];
-    try {
-      const raw = await readdir(dir, { withFileTypes: true });
-      entries = raw.map((d) => ({
-        name: d.name,
-        isDirectory: d.isDirectory(),
-        isFile: d.isFile(),
-      }));
-    } catch {
-      return;
-    }
-    const subdirs: string[] = [];
-    for (const e of entries) {
-      const full = join(dir, e.name);
-      if (e.isFile && e.name.endsWith('.jsonl')) {
-        out.push(full);
-      } else if (e.isDirectory) {
-        subdirs.push(full);
-      }
-    }
-    await Promise.all(subdirs.map(walk));
-  }
-  await walk(root);
-  return out;
 }
 
 type ParsedFile = {
@@ -122,12 +83,16 @@ type ParsedFile = {
  * we still stream line-by-line so memory stays flat and incremental tail
  * reads work the same way.
  */
-async function parseFile(path: string, fromOffset: number, primed?: {
-  sessionId?: string;
-  projectName?: string;
-  currentModel?: string;
-  firstPrompt?: string;
-}): Promise<ParsedFile> {
+async function parseFile(
+  path: string,
+  fromOffset: number,
+  primed?: {
+    sessionId?: string;
+    projectName?: string;
+    currentModel?: string;
+    firstPrompt?: string;
+  },
+): Promise<ParsedFile> {
   let lines = 0;
   const entries: Entry[] = [];
   let sessionId = primed?.sessionId;
@@ -178,9 +143,6 @@ async function parseFile(path: string, fromOffset: number, primed?: {
       if (typeof payload.model === 'string' && payload.model) {
         currentModel = payload.model;
       }
-      // Some sessions override cwd per turn (sub-shells, sandbox roots).
-      // Keep the session-wide project name unless we never got one from
-      // session_meta.
       if (!projectName && typeof payload.cwd === 'string') {
         projectName = projectNameFromCwd(payload.cwd);
       }
@@ -220,8 +182,7 @@ async function parseFile(path: string, fromOffset: number, primed?: {
           s: sessionId ?? '',
           m: currentModel ?? 'unknown',
           // Non-cached input = total input minus cached portion. Clamp to
-          // zero in case codex ever reports cached > input (shouldn't, but
-          // we'd rather count zero than negative).
+          // zero in case codex ever reports cached > input.
           i: Math.max(0, input - cachedInput),
           o: output,
           cc: 0,
@@ -236,76 +197,29 @@ async function parseFile(path: string, fromOffset: number, primed?: {
   return { entries, lines, sessionId, firstPrompt };
 }
 
-async function loadCache(cachePath: string): Promise<CodexCacheFile> {
-  try {
-    const raw = await readFile(cachePath, 'utf-8').catch(() => null);
-    if (raw == null) return { version: CACHE_VERSION, files: {} };
-    const data = JSON.parse(raw) as CodexCacheFile;
-    if (data?.version !== CACHE_VERSION) {
-      return { version: CACHE_VERSION, files: {} };
-    }
-    return data;
-  } catch {
-    return { version: CACHE_VERSION, files: {} };
-  }
-}
-
-async function saveCache(cachePath: string, cache: CodexCacheFile): Promise<void> {
-  await mkdir(dirname(cachePath), { recursive: true });
-  await writeFile(cachePath, JSON.stringify(cache));
-}
-
-async function pMap<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (true) {
-      const i = next++;
-      if (i >= items.length) return;
-      results[i] = await fn(items[i]!, i);
-    }
-  });
-  await Promise.all(workers);
-  return results;
-}
-
-export type CodexScanOptions = {
-  sessionsDir?: string;
-  cachePath?: string;
-  useCache?: boolean;
-  concurrency?: number;
-};
-
-export async function scanCodex(options: CodexScanOptions = {}): Promise<CodexScanResult> {
+async function scanCodex(options: ProviderScanOptions = {}): Promise<ProviderScanResult> {
   const t0 = performance.now();
-  const sessionsDir = options.sessionsDir ?? defaultCodexSessionsDir();
-  const cachePath = options.cachePath ?? defaultCodexCachePath();
+  const sessionsDir = options.dataDir ?? defaultDataDir();
+  const cachePath = options.cachePath ?? defaultCachePath();
   const useCache = options.useCache !== false;
   const concurrency = options.concurrency ?? 16;
 
-  if (!existsSync(sessionsDir)) {
-    return {
-      entries: [],
-      sessionMeta: {},
-      stats: { files: 0, cachedFiles: 0, parsedLines: 0, tookMs: 0 },
-    };
-  }
+  if (!existsSync(sessionsDir)) return emptyResult();
 
   const [files, cache] = await Promise.all([
     listJsonlFiles(sessionsDir),
     useCache
-      ? loadCache(cachePath)
-      : Promise.resolve({ version: CACHE_VERSION, files: {} as Record<string, CodexFileCacheRecord> }),
+      ? loadCache<CodexExtra>(cachePath, CACHE_VERSION)
+      : Promise.resolve({
+          version: CACHE_VERSION,
+          files: {} as Record<string, FileCacheRecord<CodexExtra>>,
+        }),
   ]);
 
   let cachedFiles = 0;
   let parsedLines = 0;
   const allEntries: Entry[] = [];
-  const newFiles: Record<string, CodexFileCacheRecord> = {};
+  const newFiles: Record<string, FileCacheRecord<CodexExtra>> = {};
   const sessionMeta: Record<string, SessionMeta> = {};
 
   const fileStats = await pMap(files, concurrency, async (path) => {
@@ -318,43 +232,38 @@ export async function scanCodex(options: CodexScanOptions = {}): Promise<CodexSc
   });
 
   await pMap(
-    fileStats.filter((x): x is NonNullable<typeof x> => x !== null),
+    fileStats.filter((x): x is FileInfo => x !== null),
     concurrency,
     async (info) => {
-      const cached = cache.files[info.path];
+      const state = decideFileState<CodexExtra>(info, cache.files[info.path]);
 
-      // Unchanged file — reuse cache.
-      if (cached && cached.size === info.size && cached.mtimeMs === info.mtimeMs) {
-        newFiles[info.path] = cached;
+      if (state.kind === 'unchanged') {
+        newFiles[info.path] = state.cached;
         cachedFiles++;
-        for (const e of cached.entries) allEntries.push(e);
-        if (cached.sessionId && cached.firstPrompt) {
-          sessionMeta[cached.sessionId] = { firstPrompt: cached.firstPrompt };
+        for (const e of state.cached.entries) allEntries.push(e);
+        if (state.cached.sessionId && state.cached.firstPrompt) {
+          sessionMeta[state.cached.sessionId] = { firstPrompt: state.cached.firstPrompt };
         }
         return;
       }
 
-      // Appended file — parse only the new tail. Codex JSONLs are append-
-      // only during a live session, so this is the common case for the
-      // currently-running session.
-      //
-      // Tail parsing carries forward sessionId / projectName / firstPrompt
-      // from the cached prefix (they were set near the top of the file)
-      // but NOT currentModel — turn_context can appear mid-file, so we'd
-      // need to re-scan to learn it. As a pragmatic fallback we derive
-      // currentModel from the most recent cached entry's model.
-      if (cached && info.size > cached.size && cached.mtimeMs <= info.mtimeMs) {
-        const lastCachedEntry = cached.entries[cached.entries.length - 1];
-        const parsed = await parseFile(info.path, cached.size, {
-          sessionId: cached.sessionId,
-          firstPrompt: cached.firstPrompt,
+      if (state.kind === 'appended') {
+        // Tail parsing carries forward sessionId / firstPrompt from the
+        // cached prefix (they were set near the top of the file) but NOT
+        // currentModel — turn_context can appear mid-file, so we'd need to
+        // re-scan to learn it. As a pragmatic fallback we derive currentModel
+        // from the most recent cached entry's model.
+        const lastCachedEntry = state.cached.entries[state.cached.entries.length - 1];
+        const parsed = await parseFile(info.path, state.fromOffset, {
+          sessionId: state.cached.sessionId,
+          firstPrompt: state.cached.firstPrompt,
           currentModel: lastCachedEntry?.m,
         });
         parsedLines += parsed.lines;
-        const merged = [...cached.entries, ...parsed.entries];
-        const sessionIdMerged = cached.sessionId ?? parsed.sessionId;
-        const firstPromptMerged = cached.firstPrompt ?? parsed.firstPrompt;
-        const record: CodexFileCacheRecord = {
+        const merged = [...state.cached.entries, ...parsed.entries];
+        const sessionIdMerged = state.cached.sessionId ?? parsed.sessionId;
+        const firstPromptMerged = state.cached.firstPrompt ?? parsed.firstPrompt;
+        const record: FileCacheRecord<CodexExtra> = {
           path: info.path,
           size: info.size,
           mtimeMs: info.mtimeMs,
@@ -373,7 +282,7 @@ export async function scanCodex(options: CodexScanOptions = {}): Promise<CodexSc
       // Cold / invalidated — full parse.
       const parsed = await parseFile(info.path, 0);
       parsedLines += parsed.lines;
-      const record: CodexFileCacheRecord = {
+      const record: FileCacheRecord<CodexExtra> = {
         path: info.path,
         size: info.size,
         mtimeMs: info.mtimeMs,
@@ -406,3 +315,14 @@ export async function scanCodex(options: CodexScanOptions = {}): Promise<CodexSc
     },
   };
 }
+
+export const codexProvider: Provider = {
+  id: 'codex',
+  label: 'Codex',
+  defaultDataDir,
+  defaultCachePath,
+  detect: (dir = defaultDataDir()) => existsSync(dir),
+  scan: scanCodex,
+};
+
+export { scanCodex as _scanCodex };

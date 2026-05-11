@@ -2,10 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { mkdir, mkdtemp, writeFile, appendFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { scanCodex } from '../server/codex';
+import { _scanCodex as scanCodex } from '../server/providers/codex';
 
 let dir: string;
-let sessionsDir: string;
+let dataDir: string;
 let cache: string;
 
 function sessionLine(over: Record<string, unknown> = {}): string {
@@ -62,9 +62,9 @@ function tokenCountLine(
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), 'ccdash-codex-'));
-  sessionsDir = join(dir, 'sessions');
+  dataDir = join(dir, 'sessions');
   cache = join(dir, 'cache.json');
-  const sub = join(sessionsDir, '2026', '04', '29');
+  const sub = join(dataDir, '2026', '04', '29');
   await mkdir(sub, { recursive: true });
 
   // A typical session with two token_count events (one initial + one growth).
@@ -116,7 +116,7 @@ afterAll(async () => {
 
 describe('codex scanner', () => {
   it('parses token_count events using last_token_usage and maps cache correctly', async () => {
-    const r = await scanCodex({ sessionsDir, cachePath: cache });
+    const r = await scanCodex({ dataDir, cachePath: cache });
     // Two real token_count events (third is empty-pulse skip) + old session contributes 0.
     expect(r.entries.length).toBe(2);
 
@@ -139,27 +139,27 @@ describe('codex scanner', () => {
   });
 
   it('extracts firstPrompt from user_message events', async () => {
-    const r = await scanCodex({ sessionsDir, cachePath: cache });
+    const r = await scanCodex({ dataDir, cachePath: cache });
     const meta = r.sessionMeta['019dd89f-c5c5-7a92-be2d-39ad099e042a'];
     expect(meta?.firstPrompt).toBe('first prompt of the session');
   });
 
   it('returns empty result when sessions dir does not exist', async () => {
-    const r = await scanCodex({ sessionsDir: join(dir, 'does-not-exist'), useCache: false });
+    const r = await scanCodex({ dataDir: join(dir, 'does-not-exist'), useCache: false });
     expect(r.entries.length).toBe(0);
     expect(r.stats.files).toBe(0);
   });
 
   it('reuses cache for unchanged files on second scan', async () => {
-    await scanCodex({ sessionsDir, cachePath: cache });
-    const second = await scanCodex({ sessionsDir, cachePath: cache });
+    await scanCodex({ dataDir, cachePath: cache });
+    const second = await scanCodex({ dataDir, cachePath: cache });
     expect(second.stats.cachedFiles).toBe(second.stats.files);
     expect(second.stats.parsedLines).toBe(0);
   });
 
   it('incrementally parses appended token_count events', async () => {
-    await scanCodex({ sessionsDir, cachePath: cache });
-    const target = join(sessionsDir, '2026', '04', '29', 'rollout-1.jsonl');
+    await scanCodex({ dataDir, cachePath: cache });
+    const target = join(dataDir, '2026', '04', '29', 'rollout-1.jsonl');
     await appendFile(
       target,
       '\n' + tokenCountLine(
@@ -168,7 +168,7 @@ describe('codex scanner', () => {
         '2026-04-29T10:00:00.000Z',
       ),
     );
-    const r = await scanCodex({ sessionsDir, cachePath: cache });
+    const r = await scanCodex({ dataDir, cachePath: cache });
     // Now 3 real entries — the appended one should pick up the previously
     // seen currentModel (gpt-5.5) without re-parsing the prefix.
     expect(r.entries.length).toBe(3);

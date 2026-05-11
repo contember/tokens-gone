@@ -4,6 +4,10 @@
  * Runs the scan eagerly at startup and serves the cached result. POST
  * /api/refresh re-runs the scan (incremental — usually <1s once the disk
  * cache is warm) and returns updated stats.
+ *
+ * The server is provider-agnostic: it iterates `PROVIDERS`, asks each one
+ * to scan, concatenates entries, and re-sorts. Adding a new harness only
+ * touches `./providers/`.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -12,19 +16,23 @@ import { stat } from 'node:fs/promises';
 import { extname, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
-import { scan, defaultClaudeProjectsDir, defaultCachePath } from './scanner.ts';
-import { scanCodex, defaultCodexSessionsDir, codexSessionsExist } from './codex.ts';
+import { PROVIDERS, type Provider, type ProviderScanStats } from './providers/index.ts';
 import type { Entry, SessionMeta } from './types.ts';
+
+type ProviderInfo = {
+  id: Provider['id'];
+  label: string;
+  dataDir: string;
+  cachePath: string;
+  detected: boolean;
+  stats: ProviderScanStats;
+};
 
 type Cache = {
   entries: Entry[];
   sessionMeta: Record<string, SessionMeta>;
-  stats: { files: number; cachedFiles: number; parsedLines: number; tookMs: number };
-  /** Per-source stats — useful for the UI to surface "scanned N codex files" etc. */
-  sources: {
-    cc: { files: number; cachedFiles: number; parsedLines: number; tookMs: number };
-    codex: { files: number; cachedFiles: number; parsedLines: number; tookMs: number };
-  };
+  stats: ProviderScanStats;
+  providers: ProviderInfo[];
   generatedAt: number;
 };
 
@@ -84,6 +92,67 @@ function sendJson(
   res.end(body);
 }
 
+const EMPTY_STATS: ProviderScanStats = {
+  files: 0,
+  cachedFiles: 0,
+  parsedLines: 0,
+  tookMs: 0,
+};
+
+/**
+ * Scan every detected provider in parallel and merge. Undetected providers
+ * still appear in the result with empty stats so the UI can show "Codex:
+ * not detected" without special-casing.
+ */
+async function runScan(): Promise<Omit<Cache, 'generatedAt'>> {
+  const results = await Promise.all(
+    PROVIDERS.map(async (p) => {
+      const dataDir = p.defaultDataDir();
+      const cachePath = p.defaultCachePath();
+      const detected = p.detect(dataDir);
+      if (!detected) {
+        return {
+          info: { id: p.id, label: p.label, dataDir, cachePath, detected, stats: EMPTY_STATS },
+          entries: [] as Entry[],
+          sessionMeta: {} as Record<string, SessionMeta>,
+        };
+      }
+      const r = await p.scan();
+      return {
+        info: { id: p.id, label: p.label, dataDir, cachePath, detected, stats: r.stats },
+        entries: r.entries,
+        sessionMeta: r.sessionMeta,
+      };
+    }),
+  );
+
+  const entries: Entry[] = [];
+  let sessionMeta: Record<string, SessionMeta> = {};
+  const providers: ProviderInfo[] = [];
+  for (const r of results) {
+    providers.push(r.info);
+    for (const e of r.entries) entries.push(e);
+    // Session ID spaces don't collide in practice (all UUIDs), so a simple
+    // spread merge is fine. Later providers win on collision, which is
+    // intentional: it's how we'd preserve a provider's own labels over a
+    // stale Claude-side entry if we ever shared IDs.
+    sessionMeta = { ...sessionMeta, ...r.sessionMeta };
+  }
+  entries.sort((a, b) => a.t - b.t);
+
+  const stats = providers.reduce<ProviderScanStats>(
+    (acc, p) => ({
+      files: acc.files + p.stats.files,
+      cachedFiles: acc.cachedFiles + p.stats.cachedFiles,
+      parsedLines: acc.parsedLines + p.stats.parsedLines,
+      tookMs: Math.max(acc.tookMs, p.stats.tookMs),
+    }),
+    { ...EMPTY_STATS },
+  );
+
+  return { entries, sessionMeta, stats, providers };
+}
+
 export type StartOptions = {
   port?: number;
   host?: string;
@@ -106,34 +175,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   async function refresh(): Promise<void> {
     if (inFlight) return inFlight;
     inFlight = (async () => {
-      // Codex is opt-in by directory existence — if the user doesn't run
-      // codex, the scan resolves instantly to an empty result.
-      const [ccResult, codexResult] = await Promise.all([
-        scan(),
-        scanCodex(),
-      ]);
-
-      // Merge: entries get concatenated and re-sorted by timestamp (each
-      // scanner returns sorted, but the merged stream needs one final pass).
-      // Session ID spaces don't collide in practice (both are UUIDs), so
-      // sessionMeta merges cleanly with codex preferred for codex-owned IDs.
-      const entries = [...ccResult.entries, ...codexResult.entries];
-      entries.sort((a, b) => a.t - b.t);
-      const sessionMeta = { ...ccResult.sessionMeta, ...codexResult.sessionMeta };
-      const stats = {
-        files: ccResult.stats.files + codexResult.stats.files,
-        cachedFiles: ccResult.stats.cachedFiles + codexResult.stats.cachedFiles,
-        parsedLines: ccResult.stats.parsedLines + codexResult.stats.parsedLines,
-        tookMs: Math.max(ccResult.stats.tookMs, codexResult.stats.tookMs),
-      };
-
-      cached = {
-        entries,
-        sessionMeta,
-        stats,
-        sources: { cc: ccResult.stats, codex: codexResult.stats },
-        generatedAt: Date.now(),
-      };
+      const result = await runScan();
+      cached = { ...result, generatedAt: Date.now() };
       inFlight = null;
     })();
     return inFlight;
@@ -151,6 +194,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         ok: true,
         entries: cached!.entries.length,
         stats: cached!.stats,
+        providers: cached!.providers,
         generatedAt: cached!.generatedAt,
       });
       return;
@@ -165,11 +209,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         entries: clientEntries,
         sessionMeta: cached!.sessionMeta,
         stats: cached!.stats,
-        sources: cached!.sources,
+        providers: cached!.providers,
         generatedAt: cached!.generatedAt,
-        projectsDir: defaultClaudeProjectsDir(),
-        cachePath: defaultCachePath(),
-        codexSessionsDir: codexSessionsExist() ? defaultCodexSessionsDir() : null,
       });
       return;
     }
@@ -237,25 +278,22 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const url = `http://localhost:${actualPort}`;
 
   console.log(`tokens-gone ready on ${url}`);
-  console.log(`Projects: ${defaultClaudeProjectsDir()}`);
-  console.log(`Cache:    ${defaultCachePath()}`);
-  if (codexSessionsExist()) {
-    console.log(`Codex:    ${defaultCodexSessionsDir()}`);
+  for (const p of PROVIDERS) {
+    const dir = p.defaultDataDir();
+    const detected = p.detect(dir);
+    console.log(`${p.label.padEnd(12)} ${detected ? dir : '(not detected)'}`);
   }
 
   refresh()
     .then(() => {
-      if (cached) {
-        const cc = cached.sources.cc;
-        const cx = cached.sources.codex;
-        const parts = [
-          `cc: ${cc.files} files (${cc.cachedFiles} cached)`,
-        ];
-        if (cx.files > 0) parts.push(`codex: ${cx.files} files (${cx.cachedFiles} cached)`);
-        console.log(
-          `Loaded ${cached.entries.length} entries — ${parts.join(', ')} in ${cached.stats.tookMs}ms`,
-        );
-      }
+      if (!cached) return;
+      const detected = cached.providers.filter((p) => p.detected);
+      const parts = detected.map(
+        (p) => `${p.label}: ${p.stats.files} files (${p.stats.cachedFiles} cached)`,
+      );
+      console.log(
+        `Loaded ${cached.entries.length} entries — ${parts.join(', ')} in ${cached.stats.tookMs}ms`,
+      );
     })
     .catch((err) => console.error('Initial scan failed', err));
 

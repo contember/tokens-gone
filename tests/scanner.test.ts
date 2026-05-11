@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { mkdir, mkdtemp, writeFile, appendFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { scan } from '../server/scanner';
+import { _scanClaude as scan } from '../server/providers/claude';
 
 let dir: string;
 let projects: string;
@@ -87,7 +87,7 @@ afterAll(async () => {
 
 describe('scanner', () => {
   it('parses usage entries and ignores noise/invalid lines', async () => {
-    const r = await scan({ projectsDir: projects, cachePath: cache });
+    const r = await scan({ dataDir: projects, cachePath: cache });
     expect(r.entries.length).toBe(3);
     expect(r.stats.files).toBe(2);
     const projects_ = new Set(r.entries.map((e) => e.p));
@@ -101,7 +101,7 @@ describe('scanner', () => {
     await mkdir(dupDir, { recursive: true });
     await writeFile(join(dupDir, 'dup.jsonl'), makeLineFixed('msg-1', 'req-1'));
 
-    const r = await scan({ projectsDir: projects, cachePath: cache });
+    const r = await scan({ dataDir: projects, cachePath: cache });
     // sess1.jsonl line 1 (which beforeAll wrote with makeLine() → assigns
     // msg-1:req-1 as the first call) and dup.jsonl both carry msg-1:req-1.
     // Dedup must collapse them so we get exactly one entry with those tokens.
@@ -114,14 +114,14 @@ describe('scanner', () => {
   });
 
   it('uses cache for unchanged files (second scan parses nothing)', async () => {
-    await scan({ projectsDir: projects, cachePath: cache });
-    const second = await scan({ projectsDir: projects, cachePath: cache });
+    await scan({ dataDir: projects, cachePath: cache });
+    const second = await scan({ dataDir: projects, cachePath: cache });
     expect(second.stats.cachedFiles).toBe(second.stats.files);
     expect(second.stats.parsedLines).toBe(0);
   });
 
   it('incrementally parses appended content', async () => {
-    await scan({ projectsDir: projects, cachePath: cache });
+    await scan({ dataDir: projects, cachePath: cache });
     const target = join(projects, '-home-user-projects-foo', 'sess1.jsonl');
     await appendFile(
       target,
@@ -141,7 +141,7 @@ describe('scanner', () => {
         }),
     );
 
-    const r = await scan({ projectsDir: projects, cachePath: cache });
+    const r = await scan({ dataDir: projects, cachePath: cache });
     expect(r.entries.length).toBe(4);
     // Only the appended file should have parsed lines; the other is still cached.
     expect(r.stats.cachedFiles).toBe(r.stats.files - 1);
@@ -195,7 +195,7 @@ describe('scanner', () => {
     ];
     await writeFile(join(streamDir, 's.jsonl'), lines.join('\n'));
 
-    const r = await scan({ projectsDir: projects, cachePath: cache });
+    const r = await scan({ dataDir: projects, cachePath: cache });
     const streamed = r.entries.filter((e) => e.s === 'sess-S');
     expect(streamed.length).toBe(1);
     expect(streamed[0]!.o).toBe(200);
@@ -222,7 +222,7 @@ describe('scanner', () => {
     await writeFile(join(subDir, 'parent.jsonl'), line);
     await writeFile(join(subDir, 'subagents', 'agent.jsonl'), line);
 
-    const r = await scan({ projectsDir: projects, cachePath: cache });
+    const r = await scan({ dataDir: projects, cachePath: cache });
     const hits = r.entries.filter((e) => e.s === 'sess-M');
     expect(hits.length).toBe(1);
 
@@ -237,7 +237,7 @@ describe('scanner', () => {
       makeLine({ message: { id: 'mx', model: '<synthetic>', usage: { input_tokens: 1, output_tokens: 1 } } }),
     );
 
-    const r = await scan({ projectsDir: projects, cachePath: cache });
+    const r = await scan({ dataDir: projects, cachePath: cache });
     expect(r.entries.find((e) => e.m === '<synthetic>')).toBeUndefined();
 
     await rm(synthDir, { recursive: true });

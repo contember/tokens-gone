@@ -1,55 +1,74 @@
 /**
- * JSONL scanner with per-file disk cache.
+ * Claude Code provider.
  *
- * Strategy:
- *  - Cache is keyed by (path, size, mtimeMs). If a file is unchanged, its
- *    parsed entries are reused verbatim — no re-parsing.
- *  - When a file grew (the common case for active sessions), we only parse
- *    the appended tail by seeking to the cached size.
- *  - Anything else (shrunk, mtime moved backwards) triggers a full re-parse.
- *  - Files are processed in parallel with a bounded worker pool to keep CPU
- *    saturated without overwhelming the FS.
+ * Reads `~/.claude/projects/**\/*.jsonl`. Each `.jsonl` is a session log
+ * with one JSON object per line. Assistant messages carry `usage.{input_tokens,
+ * output_tokens, cache_creation_input_tokens, cache_read_input_tokens}` which
+ * maps 1:1 onto our `Entry` shape.
+ *
+ * Deduplication is two layers deep:
+ *   1. Intra-file: streaming responses log one line per chunk, each with the
+ *      same msgId:reqId. We keep the chunk with the largest output_tokens
+ *      (the final billed amount).
+ *   2. Cross-file: subagent JSONLs replicate their parent session's API
+ *      calls. Same msgId:reqId across files → also collapsed.
+ * Entries without a msgId:reqId fall back to structural dedup by
+ * `t|s|i|o|cc|cr`.
+ *
+ * Session titles ("summary") come from Claude's `sessions-index.json`, one
+ * per project dir. When that's missing we fall back to the first user
+ * message extracted from the JSONL itself.
  */
 
-import { readdir, stat, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readdir, stat, readFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { dirname, join, sep } from 'node:path';
+import { join, sep } from 'node:path';
 import { homedir } from 'node:os';
-import type { CacheFile, Entry, FileCacheRecord, SessionMeta } from './types.ts';
+import type { Entry, SessionMeta } from '../types.ts';
+import type {
+  Provider,
+  ProviderScanOptions,
+  ProviderScanResult,
+  FileCacheRecord,
+} from './types.ts';
+import { emptyResult } from './types.ts';
+import {
+  decideFileState,
+  listJsonlFiles,
+  loadCache,
+  pMap,
+  saveCache,
+  type FileInfo,
+} from './base.ts';
 
 const CACHE_VERSION = 3;
 const MAX_PROMPT_CHARS = 200;
 
-export type ScanResult = {
-  entries: Entry[];
-  /** sessionId → metadata pulled from Claude's sessions-index.json files. */
-  sessionMeta: Record<string, SessionMeta>;
-  stats: {
-    files: number;
-    cachedFiles: number;
-    parsedLines: number;
-    tookMs: number;
-  };
+type ClaudeExtra = {
+  /** Session ID for this file (one session per JSONL). */
+  sessionId?: string;
+  /** First user prompt — fallback label when no summary exists yet. */
+  firstPrompt?: string;
 };
 
-export function defaultClaudeProjectsDir(): string {
+function defaultDataDir(): string {
   return process.env.CLAUDE_CONFIG_DIR
     ? join(process.env.CLAUDE_CONFIG_DIR, 'projects')
     : join(homedir(), '.claude', 'projects');
 }
 
-export function defaultCachePath(): string {
+function defaultCachePath(): string {
   return join(homedir(), '.cache', 'tokens-gone', 'cache.json');
 }
 
 /**
- * Resolve a project name for a JSONL file. Project name is the last segment
- * of the encoded cwd dir, which is always the first directory under
- * `projectsDir`. Subagent JSONLs live under deeper subdirs of that project
- * dir, so we walk back to the project root.
+ * Project name = last segment of the encoded cwd dir, which is always the
+ * first directory under `projectsDir`. Subagent JSONLs live under deeper
+ * subdirs of that project dir, so we walk back to the project root.
  */
-export function projectNameForFile(filePath: string, projectsDir: string): string {
+function projectNameForFile(filePath: string, projectsDir: string): string {
   const rel = filePath.startsWith(projectsDir + sep)
     ? filePath.slice(projectsDir.length + 1)
     : filePath;
@@ -81,7 +100,9 @@ async function loadSessionMeta(projectsDir: string): Promise<Record<string, Sess
       try {
         const raw = await readFile(indexPath, 'utf-8').catch(() => null);
         if (raw == null) return;
-        const data = JSON.parse(raw) as { entries?: Array<{ sessionId?: string; summary?: string; firstPrompt?: string }> };
+        const data = JSON.parse(raw) as {
+          entries?: Array<{ sessionId?: string; summary?: string; firstPrompt?: string }>;
+        };
         if (!data?.entries) return;
         for (const e of data.entries) {
           if (!e.sessionId) continue;
@@ -96,37 +117,6 @@ async function loadSessionMeta(projectsDir: string): Promise<Record<string, Sess
     }),
   );
   return out;
-}
-
-async function listJsonlFiles(projectsDir: string): Promise<string[]> {
-  const result: string[] = [];
-
-  async function walk(dir: string): Promise<void> {
-    let entries: { name: string; isDirectory: boolean; isFile: boolean }[];
-    try {
-      const raw = await readdir(dir, { withFileTypes: true });
-      entries = raw.map((d) => ({
-        name: d.name,
-        isDirectory: d.isDirectory(),
-        isFile: d.isFile(),
-      }));
-    } catch {
-      return;
-    }
-    const subdirs: string[] = [];
-    for (const e of entries) {
-      const full = join(dir, e.name);
-      if (e.isFile && e.name.endsWith('.jsonl')) {
-        result.push(full);
-      } else if (e.isDirectory) {
-        subdirs.push(full);
-      }
-    }
-    await Promise.all(subdirs.map(walk));
-  }
-
-  await walk(projectsDir);
-  return result;
 }
 
 /**
@@ -199,6 +189,8 @@ async function parseFile(
       cr: usage.cache_read_input_tokens ?? 0,
       f: usage.speed === 'fast' ? 1 : 0,
       h: msgId && reqId ? `${msgId}:${reqId}` : undefined,
+      // src omitted → defaults to 'cc' downstream. Keeps the cache (and the
+      // JSON payload) smaller for the common case.
     });
   }
   return { entries, lines, sessionId, firstPrompt };
@@ -264,77 +256,46 @@ function dedupByHash(entries: Entry[]): Entry[] {
   return out;
 }
 
-async function loadCache(cachePath: string): Promise<CacheFile> {
-  try {
-    const raw = await readFile(cachePath, 'utf-8').catch(() => null);
-    if (raw == null) return { version: CACHE_VERSION, files: {} };
-    const data = JSON.parse(raw) as CacheFile;
-    if (data?.version !== CACHE_VERSION) {
-      return { version: CACHE_VERSION, files: {} };
-    }
-    return data;
-  } catch {
-    return { version: CACHE_VERSION, files: {} };
-  }
-}
-
-async function saveCache(cachePath: string, cache: CacheFile): Promise<void> {
-  await mkdir(dirname(cachePath), { recursive: true });
-  await writeFile(cachePath, JSON.stringify(cache));
-}
-
 /**
- * Map-with-concurrency-limit. Avoids opening 5000 file descriptors at once,
- * which on Linux is fine but on macOS hits ulimit at 256.
+ * Strip out cached firstPrompt values that are actually slash-command
+ * wrappers. We keep these in the on-disk cache to avoid forcing a re-parse
+ * on every parser rule tweak, but filter them at the assembly boundary.
  */
-async function pMap<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (true) {
-      const i = next++;
-      if (i >= items.length) return;
-      results[i] = await fn(items[i]!, i);
-    }
-  });
-  await Promise.all(workers);
-  return results;
+function sanitizePrompt(s: string | undefined): string | undefined {
+  if (!s) return undefined;
+  const t = s.trim();
+  if (!t) return undefined;
+  if (
+    t.startsWith('<command-name>') ||
+    t.startsWith('<command-message>') ||
+    t.startsWith('<local-command-')
+  ) {
+    return undefined;
+  }
+  return t;
 }
 
-export type ScanOptions = {
-  projectsDir?: string;
-  cachePath?: string;
-  /** When false, don't read or write the disk cache. */
-  useCache?: boolean;
-  /** Max parallel file reads. */
-  concurrency?: number;
-};
-
-export async function scan(options: ScanOptions = {}): Promise<ScanResult> {
+async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderScanResult> {
   const t0 = performance.now();
-  const projectsDir = options.projectsDir ?? defaultClaudeProjectsDir();
+  const projectsDir = options.dataDir ?? defaultDataDir();
   const cachePath = options.cachePath ?? defaultCachePath();
   const useCache = options.useCache !== false;
   const concurrency = options.concurrency ?? 16;
+
+  if (!existsSync(projectsDir)) return emptyResult();
 
   const [files, sessionMeta] = await Promise.all([
     listJsonlFiles(projectsDir),
     loadSessionMeta(projectsDir),
   ]);
   const cache = useCache
-    ? await loadCache(cachePath)
-    : { version: CACHE_VERSION, files: {} as Record<string, FileCacheRecord> };
+    ? await loadCache<ClaudeExtra>(cachePath, CACHE_VERSION)
+    : { version: CACHE_VERSION, files: {} as Record<string, FileCacheRecord<ClaudeExtra>> };
 
   let cachedFiles = 0;
   let parsedLines = 0;
   const allEntries: Entry[] = [];
-
-  // Build the new cache map as we go so stale entries get dropped.
-  const newFiles: Record<string, FileCacheRecord> = {};
+  const newFiles: Record<string, FileCacheRecord<ClaudeExtra>> = {};
 
   const fileStats = await pMap(files, concurrency, async (path) => {
     try {
@@ -345,53 +306,55 @@ export async function scan(options: ScanOptions = {}): Promise<ScanResult> {
     }
   });
 
-  await pMap(fileStats.filter((x): x is NonNullable<typeof x> => x !== null), concurrency, async (info) => {
-    const cached = cache.files[info.path];
-    const projectName = projectNameForFile(info.path, projectsDir);
+  await pMap(
+    fileStats.filter((x): x is FileInfo => x !== null),
+    concurrency,
+    async (info) => {
+      const state = decideFileState<ClaudeExtra>(info, cache.files[info.path]);
+      const projectName = projectNameForFile(info.path, projectsDir);
 
-    // Unchanged file — reuse cache.
-    if (cached && cached.size === info.size && cached.mtimeMs === info.mtimeMs) {
-      newFiles[info.path] = cached;
-      cachedFiles++;
-      for (const e of cached.entries) allEntries.push(e);
-      return;
-    }
+      if (state.kind === 'unchanged') {
+        newFiles[info.path] = state.cached;
+        cachedFiles++;
+        for (const e of state.cached.entries) allEntries.push(e);
+        return;
+      }
 
-    // Appended file — parse only the tail, then re-dedup with existing entries.
-    // The new tail can complete a streaming response whose earlier chunks
-    // are already cached, so we merge then dedup-by-hash again.
-    if (cached && info.size > cached.size && cached.mtimeMs <= info.mtimeMs) {
-      const parsed = await parseFile(info.path, projectName, cached.size);
+      if (state.kind === 'appended') {
+        // The new tail can complete a streaming response whose earlier chunks
+        // are already cached, so we merge then dedup-by-hash again.
+        const parsed = await parseFile(info.path, projectName, state.fromOffset);
+        parsedLines += parsed.lines;
+        const merged = dedupByHash([...state.cached.entries, ...parsed.entries]);
+        const record: FileCacheRecord<ClaudeExtra> = {
+          path: info.path,
+          size: info.size,
+          mtimeMs: info.mtimeMs,
+          entries: merged,
+          sessionId: state.cached.sessionId ?? parsed.sessionId,
+          firstPrompt: state.cached.firstPrompt ?? parsed.firstPrompt,
+        };
+        newFiles[info.path] = record;
+        for (const e of merged) allEntries.push(e);
+        return;
+      }
+
+      // Cold or invalidated — parse the whole file and dedup intra-file.
+      const parsed = await parseFile(info.path, projectName, 0);
       parsedLines += parsed.lines;
-      const merged = dedupByHash([...cached.entries, ...parsed.entries]);
-      const record: FileCacheRecord = {
+      const deduped = dedupByHash(parsed.entries);
+      const record: FileCacheRecord<ClaudeExtra> = {
         path: info.path,
         size: info.size,
         mtimeMs: info.mtimeMs,
-        entries: merged,
-        sessionId: cached.sessionId ?? parsed.sessionId,
-        firstPrompt: cached.firstPrompt ?? parsed.firstPrompt,
+        entries: deduped,
+        sessionId: parsed.sessionId,
+        firstPrompt: parsed.firstPrompt,
       };
       newFiles[info.path] = record;
-      for (const e of merged) allEntries.push(e);
-      return;
-    }
-
-    // Cold or invalidated — parse the whole file and dedup intra-file.
-    const parsed = await parseFile(info.path, projectName, 0);
-    parsedLines += parsed.lines;
-    const deduped = dedupByHash(parsed.entries);
-    const record: FileCacheRecord = {
-      path: info.path,
-      size: info.size,
-      mtimeMs: info.mtimeMs,
-      entries: deduped,
-      sessionId: parsed.sessionId,
-      firstPrompt: parsed.firstPrompt,
-    };
-    newFiles[info.path] = record;
-    for (const e of deduped) allEntries.push(e);
-  });
+      for (const e of deduped) allEntries.push(e);
+    },
+  );
 
   if (useCache) {
     await saveCache(cachePath, { version: CACHE_VERSION, files: newFiles });
@@ -450,21 +413,15 @@ export async function scan(options: ScanOptions = {}): Promise<ScanResult> {
   };
 }
 
-/**
- * Strip out cached firstPrompt values that are actually slash-command
- * wrappers. We keep these in the on-disk cache to avoid forcing a re-parse
- * on every parser rule tweak, but filter them at the assembly boundary.
- */
-function sanitizePrompt(s: string | undefined): string | undefined {
-  if (!s) return undefined;
-  const t = s.trim();
-  if (!t) return undefined;
-  if (
-    t.startsWith('<command-name>') ||
-    t.startsWith('<command-message>') ||
-    t.startsWith('<local-command-')
-  ) {
-    return undefined;
-  }
-  return t;
-}
+export const claudeProvider: Provider = {
+  id: 'cc',
+  label: 'Claude Code',
+  defaultDataDir,
+  defaultCachePath,
+  detect: (dir = defaultDataDir()) => existsSync(dir),
+  scan: scanClaude,
+};
+
+// Test-only export so the existing scanner.test.ts can drive the parser
+// directly without going through the Provider façade.
+export { scanClaude as _scanClaude };
