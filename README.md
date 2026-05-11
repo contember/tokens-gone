@@ -65,22 +65,6 @@ bun run typecheck
 bun run build              # vite build + esbuild bundle of the server CLI
 ```
 
-## Releasing
-
-The `Release` workflow runs on git tags matching `v*`:
-
-```bash
-git tag v0.2.0
-git push origin v0.2.0
-```
-
-The tag is the source of truth for the version — the workflow writes it
-into `package.json`, builds, and publishes with `npm publish --provenance`.
-Auth uses npm trusted publishing via GitHub OIDC, so no `NPM_TOKEN` secret
-is needed; the npm package just has to be configured with this repo as a
-trusted publisher (npmjs.com → package settings → Trusted Publishers,
-workflow `release.yml`).
-
 ## License
 
 MIT
