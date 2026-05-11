@@ -23,10 +23,10 @@
   --line-strong: rgba(244, 235, 220, 0.14);
 
   /* ── text (warm cream hierarchy) ──────────────────────── */
-  --t-1: #f1e8d8;
-  --t-2: #b5a994;
-  --t-3: #7a6f5e;
-  --t-mute: #4a4339;
+  --t-1: #f8f0e0;
+  --t-2: #cdc0a8;
+  --t-3: #9c8f7a;
+  --t-mute: #6e6555;
 
   /* ── single accent (terracotta — Anthropic-warm) ──────── */
   --accent: #e07856;
