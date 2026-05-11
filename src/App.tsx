@@ -289,6 +289,70 @@ function Dashboard({
           onClose={() => setSelectedSession(null)}
         />
       )}
+
+      <footer className="app-foot">
+        <ThemeSwitch />
+      </footer>
+    </div>
+  );
+}
+
+type ThemePref = 'system' | 'light' | 'dark';
+
+function readThemePref(): ThemePref {
+  try {
+    const stored = localStorage.getItem('theme');
+    if (stored === 'light' || stored === 'dark') return stored;
+  } catch {}
+  return 'system';
+}
+
+function applyTheme(pref: ThemePref): void {
+  const resolved =
+    pref === 'system'
+      ? matchMedia('(prefers-color-scheme: light)').matches
+        ? 'light'
+        : 'dark'
+      : pref;
+  document.documentElement.dataset.theme = resolved;
+}
+
+function ThemeSwitch() {
+  const [pref, setPref] = useState<ThemePref>(readThemePref);
+
+  useEffect(() => {
+    applyTheme(pref);
+    if (pref !== 'system') return;
+    const mq = matchMedia('(prefers-color-scheme: light)');
+    const onChange = () => applyTheme('system');
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, [pref]);
+
+  function pick(next: ThemePref) {
+    setPref(next);
+    try {
+      if (next === 'system') localStorage.removeItem('theme');
+      else localStorage.setItem('theme', next);
+    } catch {}
+  }
+
+  const opts: ThemePref[] = ['system', 'light', 'dark'];
+  return (
+    <div className="theme-switch" role="group" aria-label="Theme">
+      <span className="lbl">Theme</span>
+      <div className="group">
+        {opts.map((o) => (
+          <button
+            key={o}
+            type="button"
+            aria-pressed={pref === o}
+            onClick={() => pick(o)}
+          >
+            {o[0]!.toUpperCase() + o.slice(1)}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

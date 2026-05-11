@@ -11,6 +11,8 @@
  */
 
 :root {
+  color-scheme: dark;
+
   /* ── canvas (warm off-black, not slate) ───────────────── */
   --ink-0: #0c0b0a;
   --ink-1: #131110;
@@ -85,6 +87,44 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+[data-theme="light"] {
+  color-scheme: light;
+
+  --ink-0: #faf5ec;
+  --ink-1: #f3ecdc;
+  --ink-2: #ebe3d0;
+  --ink-3: #ddd4be;
+
+  --line: rgba(40, 32, 22, 0.13);
+  --line-soft: rgba(40, 32, 22, 0.07);
+  --line-strong: rgba(40, 32, 22, 0.24);
+
+  --t-1: #1c1813;
+  --t-2: #4a4135;
+  --t-3: #6e6555;
+  --t-mute: #968a76;
+
+  --accent: #c75333;
+  --accent-soft: rgba(199, 83, 51, 0.12);
+  --accent-line: rgba(199, 83, 51, 0.5);
+
+  --opus: #b07a3e;
+  --sonnet: #a8512e;
+  --haiku: #6e8348;
+  --other: #8a8278;
+
+  --tok-input: #6e8348;
+  --tok-output: #b07a3e;
+  --tok-cwrite: #a8512e;
+  --tok-cread: #4a6c82;
+
+  --heat-0: rgba(40, 32, 22, 0.06);
+  --heat-1: rgba(199, 83, 51, 0.20);
+  --heat-2: rgba(199, 83, 51, 0.42);
+  --heat-3: rgba(199, 83, 51, 0.65);
+  --heat-4: rgba(199, 83, 51, 0.88);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -141,7 +181,6 @@ select:focus {
 
 input[type="date"] {
   font-variant-numeric: tabular-nums;
-  color-scheme: dark;
 }
 
 a {
@@ -193,6 +232,64 @@ a:hover {
   color: var(--t-3);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
+}
+
+/* ── footer ────────────────────────────────────────────── */
+
+.app-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s-4);
+  margin-top: var(--s-6);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--line-soft);
+  font-size: 11px;
+  color: var(--t-3);
+}
+
+.theme-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.theme-switch .lbl {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--t-3);
+}
+
+.theme-switch .group {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--r-1);
+  overflow: hidden;
+}
+
+.theme-switch .group button {
+  border: none;
+  border-radius: 0;
+  padding: 4px 10px;
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  color: var(--t-3);
+  background: transparent;
+}
+
+.theme-switch .group button + button {
+  border-left: 1px solid var(--line);
+}
+
+.theme-switch .group button:hover:not([aria-pressed="true"]) {
+  color: var(--t-1);
+  background: var(--ink-2);
+}
+
+.theme-switch .group button[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 /* ── header ────────────────────────────────────────────── */
