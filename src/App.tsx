@@ -4,12 +4,11 @@ import {
   activityStats,
   applyFilters,
   daily,
-  groupBy,
   recentBurn,
   sessions,
-  totals,
+  type Totals,
 } from './aggregate';
-import { costForEntry } from './pricing';
+import { costBreakdown } from './pricing';
 import { ActiveFilters } from './components/ActiveFilters';
 import { ActivityHeatmap } from './components/ActivityHeatmap';
 import { BreakdownTable } from './components/BreakdownTable';
@@ -89,24 +88,62 @@ function Dashboard({
     [data.entries, filters],
   );
 
-  const t = useMemo(() => totals(filtered), [filtered]);
+  // Single hot pass over filtered entries: totals + token-type breakdown
+  // + per-entry totals + per-key buckets for the breakdown tables. Doing
+  // it in one loop costs the same as one Array.filter iteration; doing it
+  // across five useMemos used to dominate render time on 100k+ datasets.
+  const aggregates = useMemo(() => {
+    const t: Totals = {
+      count: 0, input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0, cost: 0,
+    };
+    let inputCost = 0, outputCost = 0, cwriteCost = 0, creadCost = 0;
+    const byModel = new Map<string, { totals: Totals; entries: Entry[] }>();
+    const byProject = new Map<string, { totals: Totals; entries: Entry[] }>();
 
-  // Cost decomposition by token type — drives the hero bar + legend.
-  const costByType = useMemo(() => {
-    let input = 0, output = 0, cwrite = 0, cread = 0;
     for (let i = 0; i < filtered.length; i++) {
       const e = filtered[i]!;
-      // Reverse-engineer the per-type contribution by computing the cost
-      // for each type in isolation. Tiered pricing makes this exact —
-      // we can't just split a single cost figure proportionally because
-      // cache reads and outputs have different per-token rates.
-      input += costForEntry({ ...e, o: 0, cc: 0, cr: 0 });
-      output += costForEntry({ ...e, i: 0, cc: 0, cr: 0 });
-      cwrite += costForEntry({ ...e, i: 0, o: 0, cr: 0 });
-      cread += costForEntry({ ...e, i: 0, o: 0, cc: 0 });
+      const b = costBreakdown(e);
+
+      t.count++;
+      t.input += e.i; t.output += e.o; t.cacheWrite += e.cc; t.cacheRead += e.cr;
+      t.total += e.i + e.o + e.cc + e.cr;
+      t.cost += b.total;
+      inputCost += b.input; outputCost += b.output;
+      cwriteCost += b.cwrite; creadCost += b.cread;
+
+      let m = byModel.get(e.m);
+      if (!m) {
+        m = { totals: emptyTotals(), entries: [] };
+        byModel.set(e.m, m);
+      }
+      addToTotals(m.totals, e, b.total);
+      m.entries.push(e);
+
+      let p = byProject.get(e.p);
+      if (!p) {
+        p = { totals: emptyTotals(), entries: [] };
+        byProject.set(e.p, p);
+      }
+      addToTotals(p.totals, e, b.total);
+      p.entries.push(e);
     }
-    return { input, output, cwrite, cread };
+
+    const byModelRows = [...byModel.entries()]
+      .map(([key, v]) => ({ key, totals: v.totals, entries: v.entries }))
+      .sort((a, b) => b.totals.cost - a.totals.cost);
+    const byProjectRows = [...byProject.entries()]
+      .map(([key, v]) => ({ key, totals: v.totals, entries: v.entries }))
+      .sort((a, b) => b.totals.cost - a.totals.cost);
+
+    return {
+      t,
+      costByType: { input: inputCost, output: outputCost, cwrite: cwriteCost, cread: creadCost },
+      byModelRows,
+      byProjectRows,
+    };
   }, [filtered]);
+  const t = aggregates.t;
+  const costByType = aggregates.costByType;
 
   // Heatmap always covers a full year ending today. Date filters are
   // ignored (so the heatmap context is preserved when drilling in via a
@@ -151,14 +188,8 @@ function Dashboard({
     setFilters({ ...filters, [key]: next });
   }
 
-  const byModelRows = useMemo(
-    () => buildRows(filtered, (e) => e.m),
-    [filtered],
-  );
-  const byProjectRows = useMemo(
-    () => buildRows(filtered, (e) => e.p),
-    [filtered],
-  );
+  const byModelRows = aggregates.byModelRows;
+  const byProjectRows = aggregates.byProjectRows;
   const sess = useMemo(() => sessions(filtered), [filtered]);
 
   const contextLine = useMemo(() => {
@@ -249,19 +280,16 @@ function Dashboard({
   );
 }
 
-function buildRows(entries: Entry[], keyFn: (e: Entry) => string) {
-  const grouped = groupBy(entries, keyFn);
-  const byKey = new Map<string, Entry[]>();
-  for (let i = 0; i < entries.length; i++) {
-    const e = entries[i]!;
-    const k = keyFn(e);
-    let arr = byKey.get(k);
-    if (!arr) { arr = []; byKey.set(k, arr); }
-    arr.push(e);
-  }
-  return grouped.map(({ key, totals }) => ({
-    key,
-    totals,
-    entries: byKey.get(key) ?? [],
-  }));
+function emptyTotals(): Totals {
+  return { count: 0, input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0, cost: 0 };
+}
+
+function addToTotals(t: Totals, e: Entry, cost: number): void {
+  t.count++;
+  t.input += e.i;
+  t.output += e.o;
+  t.cacheWrite += e.cc;
+  t.cacheRead += e.cr;
+  t.total += e.i + e.o + e.cc + e.cr;
+  t.cost += cost;
 }

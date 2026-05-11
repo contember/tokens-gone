@@ -44,12 +44,16 @@ export function Timeline({ entries, rangeFrom, rangeTo }: { entries: Entry[]; ra
   const { points, total } = useMemo(() => {
     if (entries.length === 0) return { points: [] as ChartPoint[], total: 0 };
     const buckets = new Map<string, { full: string; label: string; sort: number; byModel: Map<string, number> }>();
+    // Hot loop: only compute the bucket *key* per entry (cheap — integer
+    // math). The label / full / sort strings need toLocaleString which is
+    // expensive, so we only fill them when materializing a new bucket.
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i]!;
-      const { key, label, full, sort } = bucketize(e.t, gran);
+      const key = bucketKey(e.t, gran);
       let b = buckets.get(key);
       if (!b) {
-        b = { full, label, sort, byModel: new Map() };
+        const meta = bucketize(e.t, gran);
+        b = { full: meta.full, label: meta.label, sort: meta.sort, byModel: new Map() };
         buckets.set(key, b);
       }
       const cls = modelClass(e.m) || 'other';
@@ -116,6 +120,19 @@ function Legend({ cls }: { cls: 'opus' | 'sonnet' | 'haiku' }) {
 
 function labelForFamily(k: string): string {
   return k.charAt(0).toUpperCase() + k.slice(1);
+}
+
+/**
+ * Cheap bucket-key function — integer math only, no Intl. Called once
+ * per entry in the timeline loop, so it must avoid allocations and
+ * `toLocaleString`. The labels (which need locale formatting) are
+ * computed lazily by `bucketize` when a bucket is first materialized.
+ */
+function bucketKey(t: number, gran: Granularity): string {
+  if (gran === 'hour') return String(hourBucket(t));
+  if (gran === 'day') return dayKey(t);
+  if (gran === 'week') return String(weekBucket(t));
+  return monthKey(t);
 }
 
 function bucketize(t: number, gran: Granularity): { key: string; label: string; full: string; sort: number } {

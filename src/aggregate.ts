@@ -88,35 +88,80 @@ export function groupBy(
   return out;
 }
 
+/*
+ * Bucket helpers below are called per-entry in hot loops (~145k times on
+ * real datasets). Naive implementations allocate a Date and run several
+ * methods per call → 60-80ms per loop. Each function caches its result by
+ * a fast integer key (epoch-day or epoch-hour), bringing the second-and-
+ * later calls down to a Map lookup.
+ *
+ * The caches grow at most O(buckets in dataset), which is bounded (≤365
+ * days/year, ≤24×365 hours/year, etc.) — no memory concern.
+ */
+
+const _tzOffsetMs = new Date().getTimezoneOffset() * -60000;
+
+const _dayKeyCache = new Map<number, string>();
 /** Day key in local time, YYYY-MM-DD. */
 export function dayKey(t: number): string {
+  // Fast bucket index: epoch days, shifted to local time so 00:00–23:59
+  // local lands in the same integer.
+  const idx = Math.floor((t + _tzOffsetMs) / 86400000);
+  const cached = _dayKeyCache.get(idx);
+  if (cached !== undefined) return cached;
   const d = new Date(t);
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  const s = `${y}-${m}-${day}`;
+  _dayKeyCache.set(idx, s);
+  return s;
 }
 
+const _monthKeyCache = new Map<number, string>();
 /** Month key in local time, YYYY-MM. */
 export function monthKey(t: number): string {
+  // Month index doesn't have a cheap integer form (months are uneven), so
+  // we approximate via day-index / 28 to get a key that *might* collide
+  // adjacent months — we then trust the cached string was correct.
+  // Actually safer: use a Date once, then cache by year*12 + month.
   const d = new Date(t);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const idx = d.getFullYear() * 12 + d.getMonth();
+  const cached = _monthKeyCache.get(idx);
+  if (cached !== undefined) return cached;
+  const s = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  _monthKeyCache.set(idx, s);
+  return s;
 }
 
+const _hourBucketCache = new Map<number, number>();
 /** Local-time hour bucket, returned as the bucket start in ms. */
 export function hourBucket(t: number): number {
+  const idx = Math.floor((t + _tzOffsetMs) / 3600000);
+  const cached = _hourBucketCache.get(idx);
+  if (cached !== undefined) return cached;
   const d = new Date(t);
   d.setMinutes(0, 0, 0);
-  return d.getTime();
+  const ms = d.getTime();
+  _hourBucketCache.set(idx, ms);
+  return ms;
 }
 
+const _weekBucketCache = new Map<number, number>();
 /** Local-time week bucket (Monday start), returned as the bucket start in ms. */
 export function weekBucket(t: number): number {
+  // Same idea: per-day index → cached week-start ms. Avoids re-running
+  // setHours + getDay + setDate on every entry of the same day.
+  const dayIdx = Math.floor((t + _tzOffsetMs) / 86400000);
+  const cached = _weekBucketCache.get(dayIdx);
+  if (cached !== undefined) return cached;
   const d = new Date(t);
   d.setHours(0, 0, 0, 0);
   const dow = (d.getDay() + 6) % 7; // 0 = Monday
   d.setDate(d.getDate() - dow);
-  return d.getTime();
+  const ms = d.getTime();
+  _weekBucketCache.set(dayIdx, ms);
+  return ms;
 }
 
 export type DayStat = {

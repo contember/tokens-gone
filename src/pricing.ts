@@ -64,31 +64,48 @@ const HAIKU: ModelPricing = {
   cacheRead: 0.1 / M,
 };
 
-function minorVersion(model: string, family: string): number | null {
-  const m = model.match(new RegExp(`${family}-4-(\\d{1,2})(?:-|$)`));
+// Module-level regex cache: previously these were rebuilt on every call
+// (`new RegExp(...)` inside `minorVersion`), which dominated profile time
+// once a dataset hit 100k+ entries.
+const RE_SONNET_4 = /sonnet-4-(\d{1,2})(?:-|$)/;
+const RE_SONNET_MAJOR = /sonnet-(\d{1,2})(?:-|$)/;
+const RE_OPUS_4 = /opus-4-(\d{1,2})(?:-|$)/;
+const RE_OPUS_MAJOR = /opus-(\d{1,2})(?:-|$)/;
+
+function minorVersion(model: string, four: RegExp, major: RegExp): number | null {
+  const m = model.match(four);
   if (m) return parseInt(m[1]!, 10);
-  const major = model.match(new RegExp(`${family}-(\\d{1,2})(?:-|$)`));
-  if (major) {
-    const v = parseInt(major[1]!, 10);
+  const j = model.match(major);
+  if (j) {
+    const v = parseInt(j[1]!, 10);
     if (v >= 5) return 50;
   }
   return null;
 }
 
+// Memoize getPricing by model string. Datasets repeat the same handful of
+// model names hundreds of thousands of times, so the cache hit rate is
+// effectively 1.0 after warmup.
+const PRICING_CACHE = new Map<string, ModelPricing | null>();
+
 export function getPricing(model: string): ModelPricing | null {
+  const cached = PRICING_CACHE.get(model);
+  if (cached !== undefined) return cached;
   const m = model.toLowerCase();
-  if (m.includes('haiku')) return HAIKU;
-  if (m.includes('sonnet')) {
-    const minor = minorVersion(m, 'sonnet');
-    if (minor !== null && minor >= 6) return SONNET_FLAT;
-    return SONNET_TIERED;
+  let result: ModelPricing | null;
+  if (m.includes('haiku')) {
+    result = HAIKU;
+  } else if (m.includes('sonnet')) {
+    const minor = minorVersion(m, RE_SONNET_4, RE_SONNET_MAJOR);
+    result = minor !== null && minor >= 6 ? SONNET_FLAT : SONNET_TIERED;
+  } else if (m.includes('opus')) {
+    const minor = minorVersion(m, RE_OPUS_4, RE_OPUS_MAJOR);
+    result = minor !== null && minor >= 5 ? OPUS_NEW : OPUS_LEGACY;
+  } else {
+    result = null;
   }
-  if (m.includes('opus')) {
-    const minor = minorVersion(m, 'opus');
-    if (minor !== null && minor >= 5) return OPUS_NEW;
-    return OPUS_LEGACY;
-  }
-  return null;
+  PRICING_CACHE.set(model, result);
+  return result;
 }
 
 const TIER_THRESHOLD = 200_000;
@@ -115,4 +132,30 @@ export function costForEntry(e: {
     tieredCost(e.cc, p.cacheWrite, p.tiered?.cacheWrite) +
     tieredCost(e.cr, p.cacheRead, p.tiered?.cacheRead);
   return e.f && p.fastMultiplier ? cost * p.fastMultiplier : cost;
+}
+
+/**
+ * Cost broken down by token type, in one pass. Replaces the pattern of
+ * calling `costForEntry` four times with three of the four fields zeroed
+ * out — that pattern allocated O(N) intermediate objects and did 4×
+ * pricing lookups per entry. This is one lookup, one tier check, four
+ * multiplies. Used for the hero decomposition strip and any per-row
+ * type breakdown.
+ */
+export function costBreakdown(e: {
+  m: string;
+  i: number;
+  o: number;
+  cc: number;
+  cr: number;
+  f: 0 | 1;
+}): { input: number; output: number; cwrite: number; cread: number; total: number } {
+  const p = getPricing(e.m);
+  if (!p) return { input: 0, output: 0, cwrite: 0, cread: 0, total: 0 };
+  const mult = e.f && p.fastMultiplier ? p.fastMultiplier : 1;
+  const input = tieredCost(e.i, p.input, p.tiered?.input) * mult;
+  const output = tieredCost(e.o, p.output, p.tiered?.output) * mult;
+  const cwrite = tieredCost(e.cc, p.cacheWrite, p.tiered?.cacheWrite) * mult;
+  const cread = tieredCost(e.cr, p.cacheRead, p.tiered?.cacheRead) * mult;
+  return { input, output, cwrite, cread, total: input + output + cwrite + cread };
 }
