@@ -26,7 +26,7 @@ function entry(over: Partial<Entry> = {}): Entry {
   };
 }
 
-const EMPTY: Filters = { from: null, to: null, projects: new Set(), models: new Set() };
+const EMPTY: Filters = { from: null, to: null, projects: new Set(), models: new Set(), harnesses: new Set() };
 
 describe('aggregate', () => {
   it('totals sums all token types and counts entries', () => {
@@ -66,6 +66,15 @@ describe('aggregate', () => {
         models: new Set(['claude-opus-4-7']),
       }).length,
     ).toBe(1);
+  });
+
+  it('applyFilters filters by harness, treating missing src as cc', () => {
+    const cc = entry({ s: 'cc-1' }); // no src → cc
+    const codex = entry({ s: 'cx-1', src: 'codex' });
+    expect(applyFilters([cc, codex], { ...EMPTY, harnesses: new Set(['cc']) }).length).toBe(1);
+    expect(applyFilters([cc, codex], { ...EMPTY, harnesses: new Set(['codex']) }).length).toBe(1);
+    expect(applyFilters([cc, codex], { ...EMPTY, harnesses: new Set(['cc', 'codex']) }).length).toBe(2);
+    expect(applyFilters([cc, codex], EMPTY).length).toBe(2); // empty set = all
   });
 
   it('groupBy sorts by cost descending', () => {

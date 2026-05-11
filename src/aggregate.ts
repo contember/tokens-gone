@@ -6,6 +6,7 @@
  */
 
 import type { Entry, Filters, SessionMeta } from './types.ts';
+import { entryHarness } from './types.ts';
 import { costForEntry } from './pricing.ts';
 
 export type Totals = {
@@ -45,6 +46,7 @@ export function matches(e: Entry, f: Filters): boolean {
   if (f.to !== null && e.t >= f.to) return false;
   if (f.projects.size > 0 && !f.projects.has(e.p)) return false;
   if (f.models.size > 0 && !f.models.has(e.m)) return false;
+  if (f.harnesses.size > 0 && !f.harnesses.has(entryHarness(e))) return false;
   return true;
 }
 

@@ -25,6 +25,7 @@ const EMPTY_FILTERS: Filters = {
   to: null,
   projects: new Set(),
   models: new Set(),
+  harnesses: new Set(),
 };
 
 export function App() {
@@ -161,9 +162,10 @@ function Dashboard({
       to: null,
       projects: filters.projects,
       models: filters.models,
+      harnesses: filters.harnesses,
     });
     return daily(yearEntries, from, today + 86400000);
-  }, [data.entries, filters.projects, filters.models]);
+  }, [data.entries, filters.projects, filters.models, filters.harnesses]);
 
   const stats = useMemo(() => activityStats(yearDays), [yearDays]);
   const burn = useMemo(() => recentBurn(filtered), [filtered]);

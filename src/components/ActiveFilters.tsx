@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Entry, Filters as F } from '../types';
+import type { Entry, Filters as F, Harness } from '../types';
+import { HARNESS_LABELS, entryHarness } from '../types';
 import { modelShort } from '../format';
 
 /**
@@ -19,21 +20,35 @@ export function ActiveFilters({
 }) {
   const rangeLabel = useMemo(() => describeRange(filters), [filters]);
   const anyActive =
-    filters.from !== null || filters.to !== null || filters.projects.size > 0 || filters.models.size > 0;
+    filters.from !== null ||
+    filters.to !== null ||
+    filters.projects.size > 0 ||
+    filters.models.size > 0 ||
+    filters.harnesses.size > 0;
 
-  const { allModels, allProjects } = useMemo(() => {
+  const { allModels, allProjects, allHarnesses } = useMemo(() => {
     const ms = new Map<string, number>();
     const ps = new Map<string, number>();
+    const hs = new Map<Harness, number>();
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i]!;
       ms.set(e.m, (ms.get(e.m) ?? 0) + 1);
       ps.set(e.p, (ps.get(e.p) ?? 0) + 1);
+      const h = entryHarness(e);
+      hs.set(h, (hs.get(h) ?? 0) + 1);
     }
     return {
       allModels: [...ms.entries()].sort((a, b) => b[1] - a[1]),
       allProjects: [...ps.entries()].sort((a, b) => b[1] - a[1]),
+      // Sorted by count desc; cast keeps the string-keyed MultiSelect generic happy.
+      allHarnesses: [...hs.entries()].sort((a, b) => b[1] - a[1]) as [string, number][],
     };
   }, [entries]);
+
+  // Only show the harness chip/picker if the dataset has more than one source.
+  // For Claude-only users (the vast majority) this stays hidden so the
+  // breadcrumb stays uncluttered.
+  const showHarnessPicker = allHarnesses.length > 1;
 
   function removeProject(p: string) {
     const next = new Set(filters.projects);
@@ -45,6 +60,11 @@ export function ActiveFilters({
     next.delete(m);
     setFilters({ ...filters, models: next });
   }
+  function removeHarness(h: Harness) {
+    const next = new Set(filters.harnesses);
+    next.delete(h);
+    setFilters({ ...filters, harnesses: next });
+  }
 
   return (
     <div className="crumbs">
@@ -53,6 +73,13 @@ export function ActiveFilters({
           {rangeLabel}
         </span>
       </DatePopover>
+
+      {[...filters.harnesses].flatMap((h) => [
+        <span className="sep" key={`sep-h-${h}`}>›</span>,
+        <span className="crumb" key={`h-${h}`} onClick={() => removeHarness(h)}>
+          {HARNESS_LABELS[h]} <span className="x">×</span>
+        </span>,
+      ])}
 
       {[...filters.models].flatMap((m) => [
         <span className="sep" key={`sep-m-${m}`}>›</span>,
@@ -68,6 +95,17 @@ export function ActiveFilters({
         </span>,
       ])}
 
+      {showHarnessPicker && (
+        <MultiSelect
+          label="+ harness"
+          options={allHarnesses}
+          renderLabel={(v) => HARNESS_LABELS[v as Harness] ?? v}
+          selected={filters.harnesses as unknown as Set<string>}
+          onChange={(next) =>
+            setFilters({ ...filters, harnesses: next as Set<Harness> })
+          }
+        />
+      )}
       <MultiSelect
         label="+ model"
         options={allModels}
@@ -87,7 +125,13 @@ export function ActiveFilters({
         <span
           className="clear"
           onClick={() =>
-            setFilters({ from: null, to: null, projects: new Set(), models: new Set() })
+            setFilters({
+              from: null,
+              to: null,
+              projects: new Set(),
+              models: new Set(),
+              harnesses: new Set(),
+            })
           }
         >
           clear all

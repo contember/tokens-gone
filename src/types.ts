@@ -38,6 +38,9 @@ export type ApiData = {
   codexSessionsDir?: string | null;
 };
 
+/** Tool that produced an entry. `'cc'` = Claude Code, default for legacy entries. */
+export type Harness = 'cc' | 'codex' | 'opencode';
+
 export type Filters = {
   /** ms since epoch — inclusive. */
   from: number | null;
@@ -45,6 +48,18 @@ export type Filters = {
   to: number | null;
   projects: Set<string>;
   models: Set<string>;
+  harnesses: Set<Harness>;
+};
+
+/** Resolve an entry's harness, applying the `'cc'` default for older entries. */
+export function entryHarness(e: { src?: Harness }): Harness {
+  return e.src ?? 'cc';
+}
+
+export const HARNESS_LABELS: Record<Harness, string> = {
+  cc: 'Claude Code',
+  codex: 'Codex',
+  opencode: 'OpenCode',
 };
 
 export type Bucket =
