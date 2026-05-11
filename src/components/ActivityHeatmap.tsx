@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { DayStat } from '../aggregate';
 import { fmtMoney, modelShort, modelClass } from '../format';
 
@@ -93,7 +93,7 @@ export function ActivityHeatmap({
     return { cells, monthCols, total, activeCells, max };
   }, [days]);
 
-  const [hover, setHover] = useState<DayStat | null>(null);
+  const [hover, setHover] = useState<{ day: DayStat; anchor: DOMRect } | null>(null);
 
   if (days.length === 0) {
     return <div className="empty">No activity to chart</div>;
@@ -146,7 +146,9 @@ export function ActivityHeatmap({
                   key={c.day.date}
                   className={`heatmap-cell l${c.level}${sel ? ' selected' : ''}`}
                   style={{ gridColumn: c.col + 1, gridRow: c.row + 1 }}
-                  onMouseEnter={() => setHover(c.day)}
+                  onMouseEnter={(e) =>
+                    setHover({ day: c.day, anchor: e.currentTarget.getBoundingClientRect() })
+                  }
                   onMouseLeave={() => setHover(null)}
                   onClick={() => onDayClick(sel ? null : c.day.ms)}
                 />
@@ -166,12 +168,12 @@ export function ActivityHeatmap({
         <span className="cell" style={{ background: 'var(--heat-4)' }} />
         <span>more</span>
       </div>
-      {hover && <HeatmapTooltip day={hover} />}
+      {hover && <HeatmapTooltip day={hover.day} anchor={hover.anchor} />}
     </div>
   );
 }
 
-function HeatmapTooltip({ day }: { day: DayStat }) {
+function HeatmapTooltip({ day, anchor }: { day: DayStat; anchor: DOMRect }) {
   const top = useMemo(() => {
     const sorted = [...day.byModel.entries()].sort((a, b) => b[1] - a[1]);
     return sorted.slice(0, 3);
@@ -183,12 +185,36 @@ function HeatmapTooltip({ day }: { day: DayStat }) {
     day: 'numeric',
     year: 'numeric',
   });
+
+  // Position above the cell, centered. After mount, measure the tooltip
+  // and clamp into the viewport; flip below if it would clip the top.
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const margin = 8;
+    const gap = 8;
+    let left = anchor.left + anchor.width / 2 - r.width / 2;
+    let top = anchor.top - r.height - gap;
+    if (top < margin) top = anchor.bottom + gap;
+    if (left < margin) left = margin;
+    if (left + r.width > window.innerWidth - margin) {
+      left = window.innerWidth - margin - r.width;
+    }
+    setPos({ left, top });
+  }, [anchor, day]);
+
   return (
     <div
+      ref={ref}
       style={{
         position: 'fixed',
-        top: 20,
-        right: 20,
+        left: pos?.left ?? 0,
+        top: pos?.top ?? 0,
+        visibility: pos ? 'visible' : 'hidden',
         background: 'var(--ink-2)',
         border: '1px solid var(--line-strong)',
         borderRadius: 'var(--r-2)',
