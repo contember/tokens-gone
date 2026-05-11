@@ -5,11 +5,17 @@ import { fmtInt, fmtMoney, fmtRelativeDay, fmtTokens, modelClass, modelShort } f
 type SortKey = 'lastSeen' | 'cost' | 'count' | 'duration' | 'total';
 
 /**
- * Sessions as receipt-style rows. Project leads; model badges sit next to
- * it as a visual quick-read of the conversation's nature; cost dominates
- * the right. Recent sessions at top by default.
+ * Sessions as receipt-style rows. The auto-generated title from Claude's
+ * sessions-index.json leads — that's the human-readable label visible in
+ * `/resume`. Row click opens a per-call breakdown.
  */
-export function SessionTable({ sessions }: { sessions: SessionInfo[] }) {
+export function SessionTable({
+  sessions,
+  onSelect,
+}: {
+  sessions: SessionInfo[];
+  onSelect: (s: SessionInfo) => void;
+}) {
   const [sort, setSort] = useState<SortKey>('lastSeen');
   const [asc, setAsc] = useState(false);
   const [limit, setLimit] = useState(40);
@@ -78,22 +84,51 @@ export function SessionTable({ sessions }: { sessions: SessionInfo[] }) {
       <table>
         <thead>
           <tr>
+            <th>Session</th>
             <th>Project · Models</th>
             {header('lastSeen', 'Last')}
             {header('duration', 'Duration')}
             {header('count', 'Reqs')}
             {header('total', 'Tokens')}
             {header('cost', 'Cost')}
-            <th></th>
           </tr>
         </thead>
         <tbody>
           {visible.map((s) => {
             const pct = maxCost > 0 ? (s.totals.cost / maxCost) * 100 : 0;
+            const label = s.title || s.firstPrompt || '(untitled)';
             return (
-              <tr key={s.s} style={{ position: 'relative' }}>
-                <td style={{ position: 'relative' }}>
+              <tr
+                key={s.s}
+                className="clickable"
+                onClick={() => onSelect(s)}
+                style={{ position: 'relative' }}
+              >
+                <td style={{ position: 'relative', maxWidth: 360 }}>
                   <div className="row-bar bg-only" style={{ width: `${pct}%` }} />
+                  <div style={{ position: 'relative' }}>
+                    <div
+                      className="session-title"
+                      title={label}
+                      style={{
+                        color: s.title ? 'var(--t-1)' : 'var(--t-2)',
+                        fontStyle: s.title ? 'normal' : 'italic',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {label}
+                    </div>
+                    <div
+                      className="muted"
+                      style={{ fontFamily: 'var(--mono)', fontSize: 10 }}
+                    >
+                      {s.s.slice(0, 8)}
+                    </div>
+                  </div>
+                </td>
+                <td style={{ position: 'relative' }}>
                   <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span style={{ color: 'var(--t-1)' }}>{s.project}</span>
                     <span style={{ display: 'inline-flex', gap: 4 }}>
@@ -110,7 +145,6 @@ export function SessionTable({ sessions }: { sessions: SessionInfo[] }) {
                 <td className="muted">{fmtInt(s.totals.count)}</td>
                 <td className="muted">{fmtTokens(s.totals.total)}</td>
                 <td><span className="cost">{fmtMoney(s.totals.cost)}</span></td>
-                <td className="muted" style={{ fontFamily: 'var(--mono)', fontSize: 10 }}>{s.s.slice(0, 8)}</td>
               </tr>
             );
           })}

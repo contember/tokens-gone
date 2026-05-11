@@ -14,7 +14,9 @@ import { ActivityHeatmap } from './components/ActivityHeatmap';
 import { BreakdownTable } from './components/BreakdownTable';
 import { Hero } from './components/Hero';
 import { HourGrid } from './components/HourGrid';
+import { SessionDetail } from './components/SessionDetail';
 import { SessionTable } from './components/SessionTable';
+import type { SessionInfo } from './aggregate';
 import { StatStrip } from './components/StatStrip';
 import { Timeline } from './components/Timeline';
 
@@ -190,7 +192,8 @@ function Dashboard({
 
   const byModelRows = aggregates.byModelRows;
   const byProjectRows = aggregates.byProjectRows;
-  const sess = useMemo(() => sessions(filtered), [filtered]);
+  const sess = useMemo(() => sessions(filtered, data.sessionMeta), [filtered, data.sessionMeta]);
+  const [selectedSession, setSelectedSession] = useState<SessionInfo | null>(null);
 
   const contextLine = useMemo(() => {
     if (filtered.length === 0) return 'no entries match filters';
@@ -274,8 +277,16 @@ function Dashboard({
       </div>
 
       <div className="section">
-        <SessionTable sessions={sess} />
+        <SessionTable sessions={sess} onSelect={setSelectedSession} />
       </div>
+
+      {selectedSession && (
+        <SessionDetail
+          session={selectedSession}
+          allEntries={data.entries}
+          onClose={() => setSelectedSession(null)}
+        />
+      )}
     </div>
   );
 }

@@ -16,12 +16,15 @@ import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { dirname, join, sep } from 'node:path';
 import { homedir } from 'node:os';
-import type { CacheFile, Entry, FileCacheRecord } from './types.ts';
+import type { CacheFile, Entry, FileCacheRecord, SessionMeta } from './types.ts';
 
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
+const MAX_PROMPT_CHARS = 200;
 
 export type ScanResult = {
   entries: Entry[];
+  /** sessionId → metadata pulled from Claude's sessions-index.json files. */
+  sessionMeta: Record<string, SessionMeta>;
   stats: {
     files: number;
     cachedFiles: number;
@@ -54,6 +57,45 @@ export function projectNameForFile(filePath: string, projectsDir: string): strin
   if (!top.startsWith('-')) return top || 'unknown';
   const parts = top.slice(1).split('-');
   return parts[parts.length - 1] || top;
+}
+
+/**
+ * Load per-session summaries from Claude Code's own `sessions-index.json`
+ * files (one per project dir). Missing or malformed files are skipped —
+ * the index is only written by `/resume` and similar flows, so it's normal
+ * for many project dirs not to have one.
+ */
+async function loadSessionMeta(projectsDir: string): Promise<Record<string, SessionMeta>> {
+  const out: Record<string, SessionMeta> = {};
+  let topLevel: { name: string; isDirectory: boolean }[];
+  try {
+    const raw = await readdir(projectsDir, { withFileTypes: true });
+    topLevel = raw.map((d) => ({ name: d.name, isDirectory: d.isDirectory() }));
+  } catch {
+    return out;
+  }
+  const dirs = topLevel.filter((d) => d.isDirectory).map((d) => join(projectsDir, d.name));
+  await Promise.all(
+    dirs.map(async (dir) => {
+      const indexPath = join(dir, 'sessions-index.json');
+      try {
+        const raw = await readFile(indexPath, 'utf-8').catch(() => null);
+        if (raw == null) return;
+        const data = JSON.parse(raw) as { entries?: Array<{ sessionId?: string; summary?: string; firstPrompt?: string }> };
+        if (!data?.entries) return;
+        for (const e of data.entries) {
+          if (!e.sessionId) continue;
+          out[e.sessionId] = {
+            summary: e.summary || undefined,
+            firstPrompt: e.firstPrompt || undefined,
+          };
+        }
+      } catch {
+        // Malformed index — skip silently.
+      }
+    }),
+  );
+  return out;
 }
 
 async function listJsonlFiles(projectsDir: string): Promise<string[]> {
@@ -98,21 +140,43 @@ async function parseFile(
   path: string,
   projectName: string,
   fromOffset: number,
-): Promise<{ entries: Entry[]; lines: number }> {
+): Promise<{ entries: Entry[]; lines: number; sessionId?: string; firstPrompt?: string }> {
   let lines = 0;
   const entries: Entry[] = [];
+  let sessionId: string | undefined;
+  let firstPrompt: string | undefined;
   const stream = createReadStream(path, { encoding: 'utf-8', start: fromOffset });
   const rl = createInterface({ input: stream, crlfDelay: Infinity });
   for await (const line of rl) {
     lines++;
     if (line.length < 50) continue;
-    if (line.indexOf('"usage"') === -1) continue;
+
+    // Cheap pre-filter: only JSON.parse lines that look like usage logs OR
+    // potential first-user-prompt lines. Avoids parsing every line of the
+    // ~50MB session files just to extract one prompt.
+    const hasUsage = line.indexOf('"usage"') !== -1;
+    const maybePrompt =
+      !firstPrompt &&
+      line.indexOf('"type":"user"') !== -1 &&
+      line.indexOf('"isMeta":true') === -1;
+    if (!hasUsage && !maybePrompt) continue;
+
     let json: any;
     try {
       json = JSON.parse(line);
     } catch {
       continue;
     }
+
+    if (!sessionId && typeof json.sessionId === 'string') sessionId = json.sessionId;
+
+    if (!firstPrompt && json.type === 'user' && !json.isMeta && !json.isSidechain) {
+      const text = extractUserText(json?.message?.content);
+      if (text) firstPrompt = text.slice(0, MAX_PROMPT_CHARS);
+    }
+
+    if (!hasUsage) continue;
+
     const msg = json?.message;
     const usage = msg?.usage;
     if (!usage) continue;
@@ -137,7 +201,40 @@ async function parseFile(
       h: msgId && reqId ? `${msgId}:${reqId}` : undefined,
     });
   }
-  return { entries, lines };
+  return { entries, lines, sessionId, firstPrompt };
+}
+
+/**
+ * Pull a user-typed string out of a Claude Code user message. Skips
+ * tool_result entries, tool-use blocks, and slash-command wrappers
+ * (Claude Code logs e.g. `/clear` as `<command-name>/clear</command-name>…`
+ * — useful as a marker, useless as a session label).
+ */
+function extractUserText(content: unknown): string | undefined {
+  let text: string | undefined;
+  if (typeof content === 'string') {
+    text = content;
+  } else if (Array.isArray(content)) {
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      const b = block as { type?: string; text?: string };
+      if (b.type === 'text' && typeof b.text === 'string') {
+        text = b.text;
+        break;
+      }
+    }
+  }
+  if (!text) return undefined;
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  if (
+    trimmed.startsWith('<command-name>') ||
+    trimmed.startsWith('<command-message>') ||
+    trimmed.startsWith('<local-command-')
+  ) {
+    return undefined;
+  }
+  return trimmed;
 }
 
 /**
@@ -224,7 +321,10 @@ export async function scan(options: ScanOptions = {}): Promise<ScanResult> {
   const useCache = options.useCache !== false;
   const concurrency = options.concurrency ?? 16;
 
-  const files = await listJsonlFiles(projectsDir);
+  const [files, sessionMeta] = await Promise.all([
+    listJsonlFiles(projectsDir),
+    loadSessionMeta(projectsDir),
+  ]);
   const cache = useCache
     ? await loadCache(cachePath)
     : { version: CACHE_VERSION, files: {} as Record<string, FileCacheRecord> };
@@ -261,14 +361,16 @@ export async function scan(options: ScanOptions = {}): Promise<ScanResult> {
     // The new tail can complete a streaming response whose earlier chunks
     // are already cached, so we merge then dedup-by-hash again.
     if (cached && info.size > cached.size && cached.mtimeMs <= info.mtimeMs) {
-      const { entries: tail, lines } = await parseFile(info.path, projectName, cached.size);
-      parsedLines += lines;
-      const merged = dedupByHash([...cached.entries, ...tail]);
+      const parsed = await parseFile(info.path, projectName, cached.size);
+      parsedLines += parsed.lines;
+      const merged = dedupByHash([...cached.entries, ...parsed.entries]);
       const record: FileCacheRecord = {
         path: info.path,
         size: info.size,
         mtimeMs: info.mtimeMs,
         entries: merged,
+        sessionId: cached.sessionId ?? parsed.sessionId,
+        firstPrompt: cached.firstPrompt ?? parsed.firstPrompt,
       };
       newFiles[info.path] = record;
       for (const e of merged) allEntries.push(e);
@@ -276,14 +378,16 @@ export async function scan(options: ScanOptions = {}): Promise<ScanResult> {
     }
 
     // Cold or invalidated — parse the whole file and dedup intra-file.
-    const { entries: fresh, lines } = await parseFile(info.path, projectName, 0);
-    parsedLines += lines;
-    const deduped = dedupByHash(fresh);
+    const parsed = await parseFile(info.path, projectName, 0);
+    parsedLines += parsed.lines;
+    const deduped = dedupByHash(parsed.entries);
     const record: FileCacheRecord = {
       path: info.path,
       size: info.size,
       mtimeMs: info.mtimeMs,
       entries: deduped,
+      sessionId: parsed.sessionId,
+      firstPrompt: parsed.firstPrompt,
     };
     newFiles[info.path] = record;
     for (const e of deduped) allEntries.push(e);
@@ -291,6 +395,22 @@ export async function scan(options: ScanOptions = {}): Promise<ScanResult> {
 
   if (useCache) {
     await saveCache(cachePath, { version: CACHE_VERSION, files: newFiles });
+  }
+
+  // Backfill firstPrompt for any session that wasn't found in Claude's
+  // sessions-index.json. The index covers only a fraction of sessions
+  // (resumed/explicitly-tracked), so without this fallback most rows
+  // would show as "(untitled)".
+  for (const record of Object.values(newFiles)) {
+    if (!record.sessionId) continue;
+    const prompt = sanitizePrompt(record.firstPrompt);
+    if (!prompt) continue;
+    const existing = sessionMeta[record.sessionId];
+    if (!existing) {
+      sessionMeta[record.sessionId] = { firstPrompt: prompt };
+    } else if (!existing.firstPrompt) {
+      existing.firstPrompt = prompt;
+    }
   }
 
   // Cross-file dedup: subagent JSONLs replicate their parent session's API
@@ -320,6 +440,7 @@ export async function scan(options: ScanOptions = {}): Promise<ScanResult> {
 
   return {
     entries: deduped,
+    sessionMeta,
     stats: {
       files: files.length,
       cachedFiles,
@@ -327,4 +448,23 @@ export async function scan(options: ScanOptions = {}): Promise<ScanResult> {
       tookMs: Math.round(performance.now() - t0),
     },
   };
+}
+
+/**
+ * Strip out cached firstPrompt values that are actually slash-command
+ * wrappers. We keep these in the on-disk cache to avoid forcing a re-parse
+ * on every parser rule tweak, but filter them at the assembly boundary.
+ */
+function sanitizePrompt(s: string | undefined): string | undefined {
+  if (!s) return undefined;
+  const t = s.trim();
+  if (!t) return undefined;
+  if (
+    t.startsWith('<command-name>') ||
+    t.startsWith('<command-message>') ||
+    t.startsWith('<local-command-')
+  ) {
+    return undefined;
+  }
+  return t;
 }

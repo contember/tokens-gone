@@ -10,8 +10,14 @@ export type Entry = {
   f: 0 | 1;
 };
 
+export type SessionMeta = {
+  summary?: string;
+  firstPrompt?: string;
+};
+
 export type ApiData = {
   entries: Entry[];
+  sessionMeta: Record<string, SessionMeta>;
   stats: {
     files: number;
     cachedFiles: number;

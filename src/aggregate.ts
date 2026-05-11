@@ -5,7 +5,7 @@
  * single-pass for-loops, and reuse the input shape where possible.
  */
 
-import type { Entry, Filters } from './types.ts';
+import type { Entry, Filters, SessionMeta } from './types.ts';
 import { costForEntry } from './pricing.ts';
 
 export type Totals = {
@@ -350,18 +350,26 @@ export type SessionInfo = {
   lastSeen: number;
   totals: Totals;
   models: string[];
+  /** Title from Claude's sessions-index.json, if available. */
+  title?: string;
+  /** First user prompt — fallback label when no summary exists yet. */
+  firstPrompt?: string;
 };
 
 /**
  * Sessions are aggregated separately because we want some non-totals
  * fields (first/last seen, model list).
  */
-export function sessions(entries: Entry[]): SessionInfo[] {
+export function sessions(
+  entries: Entry[],
+  meta: Record<string, SessionMeta> = {},
+): SessionInfo[] {
   const map = new Map<string, SessionInfo>();
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i]!;
     let s = map.get(e.s);
     if (!s) {
+      const m = meta[e.s];
       s = {
         s: e.s,
         project: e.p,
@@ -369,6 +377,8 @@ export function sessions(entries: Entry[]): SessionInfo[] {
         lastSeen: e.t,
         totals: emptyTotals(),
         models: [],
+        title: m?.summary,
+        firstPrompt: m?.firstPrompt,
       };
       map.set(e.s, s);
     }

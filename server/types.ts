@@ -32,11 +32,28 @@ export type Entry = {
   h?: string;
 };
 
+/**
+ * Per-session metadata pulled from Claude Code's own `sessions-index.json`
+ * (one per project dir). The `summary` is the auto-generated title shown
+ * in `/resume`; `firstPrompt` is the first user message and serves as a
+ * fallback when no summary has been computed yet.
+ */
+export type SessionMeta = {
+  summary?: string;
+  firstPrompt?: string;
+};
+
 export type FileCacheRecord = {
   path: string;
   size: number;
   mtimeMs: number;
   entries: Entry[];
+  /** Session ID for this file (one session per JSONL). */
+  sessionId?: string;
+  /** First user prompt text extracted from the file — used as a session
+   * label fallback when Claude's sessions-index.json doesn't cover this
+   * session. Truncated to keep transport cost down. */
+  firstPrompt?: string;
 };
 
 export type CacheFile = {
