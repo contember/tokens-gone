@@ -18,7 +18,7 @@ even with thousands of session files.
 ### Flags
 
 ```
--p, --port <n>   Port to listen on (default 5174, or $PORT)
+-p, --port <n>   Port to listen on (default 27821, or $PORT)
 --no-open        Don't open the browser
 -h, --help       Show help
 -v, --version    Print version
@@ -57,7 +57,7 @@ runs on plain Node 20+.
 
 ```bash
 bun install
-bun run dev                # backend on :5174
+bun run dev                # backend on :27821
 bun run dev:client         # vite on :5173 (proxied to backend)
 
 bun test

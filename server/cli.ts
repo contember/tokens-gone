@@ -17,7 +17,7 @@ const HELP = `tokens-gone — local Claude Code usage dashboard
 Usage: tokens-gone [options]
 
 Options:
-  -p, --port <n>   Port to listen on (default 5174, or $PORT)
+  -p, --port <n>   Port to listen on (default 27821, or $PORT)
   --no-open        Don't open the browser
   -h, --help       Show this help
   -v, --version    Print version
@@ -29,7 +29,7 @@ Environment:
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
-    port: Number(process.env.PORT ?? 5174),
+    port: Number(process.env.PORT ?? 27821),
     open: true,
   };
   for (let i = 0; i < argv.length; i++) {

@@ -90,7 +90,7 @@ export type RunningServer = {
 };
 
 export async function startServer(opts: StartOptions = {}): Promise<RunningServer> {
-  const port = opts.port ?? Number(process.env.PORT ?? 5174);
+  const port = opts.port ?? Number(process.env.PORT ?? 27821);
   const host = opts.host ?? '127.0.0.1';
   const dist = resolveDistDir();
 
