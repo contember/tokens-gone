@@ -52,8 +52,49 @@ describe('pricing', () => {
     expect(getPricing('opus')?.input).toBe(15 / 1_000_000); // bare "opus" matches legacy
   });
 
-  it('returns null for non-Claude models', () => {
-    expect(getPricing('gpt-5')).toBeNull();
+  it('returns null for unknown providers', () => {
+    expect(getPricing('llama-3-70b')).toBeNull();
+    expect(getPricing('gemini-2-flash')).toBeNull();
+    expect(getPricing('')).toBeNull();
+  });
+
+  it('prices base gpt-5 / gpt-5.1 / gpt-5.1-codex at $1.25 / $10', () => {
+    for (const model of ['gpt-5', 'gpt-5.1', 'gpt-5.1-codex', 'gpt-5-codex']) {
+      const p = getPricing(model);
+      expect(p?.input).toBe(1.25 / 1_000_000);
+      expect(p?.output).toBe(10 / 1_000_000);
+      expect(p?.cacheRead).toBe(0.125 / 1_000_000);
+    }
+  });
+
+  it('prices gpt-5.2-codex above base ($1.75 / $14)', () => {
+    const p = getPricing('gpt-5.2-codex');
+    expect(p?.input).toBe(1.75 / 1_000_000);
+    expect(p?.output).toBe(14 / 1_000_000);
+    expect(p?.cacheRead).toBe(0.175 / 1_000_000);
+  });
+
+  it('prices gpt-5.4 family ($2.50 / $15 base, mini and nano variants)', () => {
+    expect(getPricing('gpt-5.4')?.input).toBe(2.5 / 1_000_000);
+    expect(getPricing('gpt-5.4')?.output).toBe(15 / 1_000_000);
+    expect(getPricing('gpt-5.4-mini')?.input).toBe(0.75 / 1_000_000);
+    expect(getPricing('gpt-5.4-nano')?.input).toBe(0.2 / 1_000_000);
+  });
+
+  it('prices gpt-5.5 and gpt-5.5-pro separately', () => {
+    expect(getPricing('gpt-5.5')?.input).toBe(5 / 1_000_000);
+    expect(getPricing('gpt-5.5')?.output).toBe(30 / 1_000_000);
+    // -pro must not fall through to plain 5.5
+    expect(getPricing('gpt-5.5-pro')?.input).toBe(30 / 1_000_000);
+    expect(getPricing('gpt-5.5-pro')?.output).toBe(180 / 1_000_000);
+  });
+
+  it('gpt-5 models have no fast multiplier or tiered pricing', () => {
+    for (const model of ['gpt-5', 'gpt-5.5', 'gpt-5.2-codex']) {
+      const p = getPricing(model);
+      expect(p?.fastMultiplier).toBeUndefined();
+      expect(p?.tiered).toBeUndefined();
+    }
   });
 
   it('reproduces ccusage cost for opus-4-7 daily figure', () => {
@@ -128,6 +169,11 @@ describe('pricing', () => {
       'claude-sonnet-4-6',
       'claude-sonnet-4-5-20250929',
       'claude-haiku-4-5',
+      'gpt-5',
+      'gpt-5.1-codex',
+      'gpt-5.2-codex',
+      'gpt-5.5',
+      'gpt-5.5-pro',
     ]) {
       const server = costForRequest(tokens, model, false);
       const client = costForEntry({

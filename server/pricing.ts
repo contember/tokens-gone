@@ -1,21 +1,24 @@
 /**
- * Hardcoded Anthropic Claude pricing (USD per million tokens).
+ * Hardcoded pricing for Anthropic Claude and OpenAI GPT-5 family
+ * (USD per million tokens).
  *
- * Sources cross-checked against Anthropic's public pricing page and the
- * LiteLLM `model_prices_and_context_window.json` dataset on 2026-05-11.
+ * Sources cross-checked against Anthropic's pricing page, OpenAI's pricing
+ * page, and several third-party rate trackers on 2026-05-11. OpenAI bumped
+ * rates across the 5.x line in March/April 2026 — the codex variants
+ * (gpt-5.2-codex in particular) cost more than base gpt-5.
  *
  * Notable gotchas:
- *  - Opus 4.5/4.6/4.7 is THREE TIMES CHEAPER than the original Opus 4/4.1.
- *    Anthropic dropped Opus rates with the 4.5 generation. Tools that hardcode
- *    "Opus = $15/$75" overestimate costs by 3× on any model from 4.5 onward.
- *  - Sonnet 4.5 has 1M context with tiered pricing above 200k tokens. Sonnet
- *    4.6 dropped the 1M context tier — no tiered rates in current pricing.
+ *  - Opus 4.5+ is THREE TIMES CHEAPER than the original Opus 4/4.1.
+ *  - Sonnet 4.5 has 1M context with tiered pricing above 200k tokens;
+ *    Sonnet 4.6 dropped that tier.
  *  - Opus 4.6+ has a "fast" service tier billed at 6× the standard rate;
  *    the JSONL records this as `usage.speed === "fast"`.
+ *  - OpenAI cached-input rate is consistently 10% of base input rate.
+ *    There's no cache-write concept on the OpenAI side, so cacheWrite is
+ *    set equal to cacheRead defensively (Codex entries always have cc=0).
+ *  - GPT-5.1 and GPT-5.1-codex price the same as base GPT-5 ($1.25/$10).
  *
- * Cache-write cost here is the 5-minute ephemeral cache rate (the default
- * for Claude Code). Anthropic also offers 1h cache at a higher rate, but
- * the JSONL doesn't separate the two cleanly so we use one rate.
+ * Cache-write cost (Claude side) is the 5-minute ephemeral cache rate.
  */
 
 export type ModelPricing = {
@@ -82,6 +85,98 @@ const HAIKU: ModelPricing = {
   cacheRead: 0.1 / M,
 };
 
+// --- OpenAI GPT-5 family ---
+// Cached input is 10% of base input across the line (OpenAI's standard
+// discount). cacheWrite is set = cacheRead because OpenAI has no separate
+// write concept; if a future provider stuffed something into `cc` we'd
+// still bill at the cached rate rather than free.
+
+const GPT5_BASE: ModelPricing = {
+  // gpt-5, gpt-5.1, gpt-5.1-codex, bare gpt-5-codex
+  input: 1.25 / M,
+  output: 10 / M,
+  cacheWrite: 0.125 / M,
+  cacheRead: 0.125 / M,
+};
+
+const GPT5_MINI: ModelPricing = {
+  input: 0.25 / M,
+  output: 2 / M,
+  cacheWrite: 0.025 / M,
+  cacheRead: 0.025 / M,
+};
+
+const GPT5_NANO: ModelPricing = {
+  input: 0.05 / M,
+  output: 0.4 / M,
+  cacheWrite: 0.005 / M,
+  cacheRead: 0.005 / M,
+};
+
+const GPT52_CODEX: ModelPricing = {
+  // Dedicated codex agent variant. Priced above base 5.x.
+  input: 1.75 / M,
+  output: 14 / M,
+  cacheWrite: 0.175 / M,
+  cacheRead: 0.175 / M,
+};
+
+const GPT54: ModelPricing = {
+  input: 2.5 / M,
+  output: 15 / M,
+  cacheWrite: 0.25 / M,
+  cacheRead: 0.25 / M,
+};
+
+const GPT54_MINI: ModelPricing = {
+  input: 0.75 / M,
+  output: 4.5 / M,
+  cacheWrite: 0.075 / M,
+  cacheRead: 0.075 / M,
+};
+
+const GPT54_NANO: ModelPricing = {
+  input: 0.2 / M,
+  output: 1.25 / M,
+  cacheWrite: 0.02 / M,
+  cacheRead: 0.02 / M,
+};
+
+const GPT55: ModelPricing = {
+  input: 5 / M,
+  output: 30 / M,
+  cacheWrite: 0.5 / M,
+  cacheRead: 0.5 / M,
+};
+
+const GPT55_PRO: ModelPricing = {
+  input: 30 / M,
+  output: 180 / M,
+  cacheWrite: 3 / M,
+  cacheRead: 3 / M,
+};
+
+/**
+ * Match an OpenAI GPT-5 family model name to its pricing.
+ * Order matters: most specific substrings first so e.g. `gpt-5.5-pro`
+ * doesn't fall through to `gpt-5.5`, and `gpt-5.1-codex` doesn't get
+ * mistaken for `gpt-5-codex`.
+ */
+function getOpenAIPricing(m: string): ModelPricing | null {
+  if (m.includes('gpt-5.5-pro')) return GPT55_PRO;
+  if (m.includes('gpt-5.5')) return GPT55;
+  if (m.includes('gpt-5.4-mini')) return GPT54_MINI;
+  if (m.includes('gpt-5.4-nano')) return GPT54_NANO;
+  if (m.includes('gpt-5.4')) return GPT54;
+  // 5.2 and 5.2-codex both at codex rate (no separate 5.2 base public yet).
+  if (m.includes('gpt-5.2')) return GPT52_CODEX;
+  if (m.includes('gpt-5.1')) return GPT5_BASE; // 5.1 and 5.1-codex same as 5
+  if (m.includes('gpt-5-mini')) return GPT5_MINI;
+  if (m.includes('gpt-5-nano')) return GPT5_NANO;
+  if (m.includes('gpt-5')) return GPT5_BASE; // gpt-5, gpt-5-codex, gpt-5.0…
+  return null;
+}
+
 /**
  * Resolve a model name to its pricing. Matches all the forms Claude Code
  * and providers emit: `claude-opus-4-7`, `claude-opus-4-7-20260416`,
@@ -127,6 +222,8 @@ export function getPricing(model: string): ModelPricing | null {
     if (minor !== null && minor >= 5) return OPUS_NEW;
     return OPUS_LEGACY;
   }
+
+  if (m.includes('gpt-5')) return getOpenAIPricing(m);
 
   return null;
 }

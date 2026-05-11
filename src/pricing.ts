@@ -64,6 +64,78 @@ const HAIKU: ModelPricing = {
   cacheRead: 0.1 / M,
 };
 
+// OpenAI GPT-5 family — see server/pricing.ts for rationale on per-model
+// rates. Cached input rate is 10% of base across the line; cacheWrite is
+// set equal to cacheRead since OpenAI has no separate write concept.
+const GPT5_BASE: ModelPricing = {
+  input: 1.25 / M,
+  output: 10 / M,
+  cacheWrite: 0.125 / M,
+  cacheRead: 0.125 / M,
+};
+const GPT5_MINI: ModelPricing = {
+  input: 0.25 / M,
+  output: 2 / M,
+  cacheWrite: 0.025 / M,
+  cacheRead: 0.025 / M,
+};
+const GPT5_NANO: ModelPricing = {
+  input: 0.05 / M,
+  output: 0.4 / M,
+  cacheWrite: 0.005 / M,
+  cacheRead: 0.005 / M,
+};
+const GPT52_CODEX: ModelPricing = {
+  input: 1.75 / M,
+  output: 14 / M,
+  cacheWrite: 0.175 / M,
+  cacheRead: 0.175 / M,
+};
+const GPT54: ModelPricing = {
+  input: 2.5 / M,
+  output: 15 / M,
+  cacheWrite: 0.25 / M,
+  cacheRead: 0.25 / M,
+};
+const GPT54_MINI: ModelPricing = {
+  input: 0.75 / M,
+  output: 4.5 / M,
+  cacheWrite: 0.075 / M,
+  cacheRead: 0.075 / M,
+};
+const GPT54_NANO: ModelPricing = {
+  input: 0.2 / M,
+  output: 1.25 / M,
+  cacheWrite: 0.02 / M,
+  cacheRead: 0.02 / M,
+};
+const GPT55: ModelPricing = {
+  input: 5 / M,
+  output: 30 / M,
+  cacheWrite: 0.5 / M,
+  cacheRead: 0.5 / M,
+};
+const GPT55_PRO: ModelPricing = {
+  input: 30 / M,
+  output: 180 / M,
+  cacheWrite: 3 / M,
+  cacheRead: 3 / M,
+};
+
+function getOpenAIPricing(m: string): ModelPricing | null {
+  if (m.includes('gpt-5.5-pro')) return GPT55_PRO;
+  if (m.includes('gpt-5.5')) return GPT55;
+  if (m.includes('gpt-5.4-mini')) return GPT54_MINI;
+  if (m.includes('gpt-5.4-nano')) return GPT54_NANO;
+  if (m.includes('gpt-5.4')) return GPT54;
+  if (m.includes('gpt-5.2')) return GPT52_CODEX;
+  if (m.includes('gpt-5.1')) return GPT5_BASE;
+  if (m.includes('gpt-5-mini')) return GPT5_MINI;
+  if (m.includes('gpt-5-nano')) return GPT5_NANO;
+  if (m.includes('gpt-5')) return GPT5_BASE;
+  return null;
+}
+
 // Module-level regex cache: previously these were rebuilt on every call
 // (`new RegExp(...)` inside `minorVersion`), which dominated profile time
 // once a dataset hit 100k+ entries.
@@ -101,6 +173,8 @@ export function getPricing(model: string): ModelPricing | null {
   } else if (m.includes('opus')) {
     const minor = minorVersion(m, RE_OPUS_4, RE_OPUS_MAJOR);
     result = minor !== null && minor >= 5 ? OPUS_NEW : OPUS_LEGACY;
+  } else if (m.includes('gpt-5')) {
+    result = getOpenAIPricing(m);
   } else {
     result = null;
   }
