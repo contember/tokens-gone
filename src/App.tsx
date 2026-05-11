@@ -206,7 +206,7 @@ function Dashboard({
     <div className="app">
       <header className="app-head">
         <div className="brand">
-          <span className="brand-mark">ccdashboard</span>
+          <span className="brand-mark">tokens-gone</span>
           <span className="brand-sub">Claude Code usage</span>
         </div>
         <div className="right">

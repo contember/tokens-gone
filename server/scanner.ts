@@ -11,10 +11,10 @@
  *    saturated without overwhelming the FS.
  */
 
-import { readdir, stat } from 'node:fs/promises';
+import { readdir, stat, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { join, sep } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { homedir } from 'node:os';
 import type { CacheFile, Entry, FileCacheRecord } from './types.ts';
 
@@ -37,7 +37,7 @@ export function defaultClaudeProjectsDir(): string {
 }
 
 export function defaultCachePath(): string {
-  return join(homedir(), '.cache', 'ccdashboard', 'cache.json');
+  return join(homedir(), '.cache', 'tokens-gone', 'cache.json');
 }
 
 /**
@@ -169,11 +169,9 @@ function dedupByHash(entries: Entry[]): Entry[] {
 
 async function loadCache(cachePath: string): Promise<CacheFile> {
   try {
-    const file = Bun.file(cachePath);
-    if (!(await file.exists())) {
-      return { version: CACHE_VERSION, files: {} };
-    }
-    const data = (await file.json()) as CacheFile;
+    const raw = await readFile(cachePath, 'utf-8').catch(() => null);
+    if (raw == null) return { version: CACHE_VERSION, files: {} };
+    const data = JSON.parse(raw) as CacheFile;
     if (data?.version !== CACHE_VERSION) {
       return { version: CACHE_VERSION, files: {} };
     }
@@ -184,7 +182,8 @@ async function loadCache(cachePath: string): Promise<CacheFile> {
 }
 
 async function saveCache(cachePath: string, cache: CacheFile): Promise<void> {
-  await Bun.write(cachePath, JSON.stringify(cache));
+  await mkdir(dirname(cachePath), { recursive: true });
+  await writeFile(cachePath, JSON.stringify(cache));
 }
 
 /**

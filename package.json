@@ -1,26 +1,57 @@
 {
-  "name": "ccdashboard",
+  "name": "tokens-gone",
   "version": "0.1.0",
+  "description": "Local dashboard for Claude Code token usage and costs. Reads ~/.claude/projects/**/*.jsonl, aggregates spend, slices interactively.",
   "type": "module",
-  "private": true,
-  "scripts": {
-    "dev": "bun run --hot server/server.ts",
-    "dev:client": "vite",
-    "build": "vite build",
-    "start": "bun run server/server.ts",
-    "test": "bun test",
-    "typecheck": "tsc --noEmit"
+  "bin": {
+    "tokens-gone": "dist/cli.js"
   },
-  "dependencies": {
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "bun run --hot server/cli.ts --no-open",
+    "dev:client": "vite",
+    "build": "vite build && node scripts/build-cli.mjs",
+    "build:cli": "node scripts/build-cli.mjs",
+    "start": "node dist/cli.js",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "tokens",
+    "usage",
+    "dashboard",
+    "cli"
+  ],
+  "author": "Contember",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/contember/tokens-gone.git"
+  },
+  "homepage": "https://github.com/contember/tokens-gone#readme",
+  "bugs": {
+    "url": "https://github.com/contember/tokens-gone/issues"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "bun-types": "latest",
+    "esbuild": "^0.25.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "typescript": "^5.7.2",
-    "vite": "^6.0.0",
-    "bun-types": "latest"
+    "vite": "^6.0.0"
   }
 }

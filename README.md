@@ -1,39 +1,42 @@
-# ccdashboard
+# tokens-gone
 
-Local web dashboard for Claude Code usage. Reads `~/.claude/projects/**/*.jsonl`,
-aggregates tokens and costs, lets you slice the data interactively.
-
-## Why
-
-`ccusage` works but is slow (tens of seconds on real data) and refetches LiteLLM
-pricing every run. This is the same idea but:
-
-- Cold scan: ~8s for 1.7GB of JSONL (5000+ files); warm: ~700ms.
-- Hardcoded Anthropic pricing — no network requests, ever.
-- Browser UI with click-to-filter on charts, models, projects, sessions.
+Local web dashboard for Claude Code token usage and cost. Reads
+`~/.claude/projects/**/*.jsonl`, aggregates tokens and dollars, lets you slice
+the data interactively.
 
 ## Run
 
 ```bash
-bun install
-bun run build              # build the SPA into dist/
-bun run start              # serve on http://localhost:5174
+npx tokens-gone
 ```
 
-For development:
+That's it — it builds nothing on your machine, starts a local HTTP server,
+and opens your browser at the dashboard. Subsequent runs reuse the on-disk
+parse cache (`~/.cache/tokens-gone/cache.json`), so warm scans are sub-second
+even with thousands of session files.
 
-```bash
-bun run dev                # backend in one terminal
-bun run dev:client         # vite dev server in another, proxied to backend
-# → http://localhost:5173
+### Flags
+
+```
+-p, --port <n>   Port to listen on (default 5174, or $PORT)
+--no-open        Don't open the browser
+-h, --help       Show help
+-v, --version    Print version
 ```
 
-## Test
+### Environment
 
-```bash
-bun test
-bun run typecheck
-```
+- `CLAUDE_CONFIG_DIR` — override the Claude data dir (default `~/.claude`).
+- `PORT` — same as `--port`.
+
+## Why
+
+`ccusage` works but is slow (tens of seconds on real data) and refetches
+LiteLLM pricing every run. tokens-gone is the same idea but:
+
+- Cold scan: ~8s for 1.7GB of JSONL (5000+ files); warm: ~700ms.
+- Hardcoded Anthropic pricing — no network requests, ever.
+- Browser UI with click-to-filter on charts, models, projects, sessions.
 
 ## How it works
 
@@ -47,9 +50,35 @@ bun run typecheck
 - The SPA loads all entries once and re-aggregates client-side on every
   filter change — fast enough for ~300k entries.
 
-## Configuration
+## Development
 
-- `CLAUDE_CONFIG_DIR` — override the Claude data dir (default `~/.claude`).
-- `PORT` — server port (default 5174).
-- Cache lives at `~/.cache/ccdashboard/cache.json`. Delete it to force a
-  full re-scan.
+Requires [Bun](https://bun.sh) for the dev/test loop. The published package
+runs on plain Node 20+.
+
+```bash
+bun install
+bun run dev                # backend on :5174
+bun run dev:client         # vite on :5173 (proxied to backend)
+
+bun test
+bun run typecheck
+bun run build              # vite build + esbuild bundle of the server CLI
+```
+
+## Releasing
+
+The `Release` workflow runs on git tags matching `v*`:
+
+```bash
+# bump version in package.json, commit, then:
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+It typechecks, tests, builds, verifies the tag matches `package.json`, and
+publishes to npm with provenance. Requires an `NPM_TOKEN` repo secret with
+publish access to the `tokens-gone` package.
+
+## License
+
+MIT

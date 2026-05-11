@@ -1,4 +1,4 @@
-# ccdashboard — interface design system
+# tokens-gone — interface design system
 
 ## Intent
 
