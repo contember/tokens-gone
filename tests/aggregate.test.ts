@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   applyFilters,
   dayKey,
+  estimateMissingActivity,
   groupBy,
   hourBucket,
   monthKey,
@@ -9,7 +10,7 @@ import {
   totals,
   weekBucket,
 } from '../src/aggregate';
-import type { Entry, Filters } from '../src/types';
+import type { Entry, Filters, PromptDay } from '../src/types';
 
 function entry(over: Partial<Entry> = {}): Entry {
   return {
@@ -125,5 +126,114 @@ describe('aggregate', () => {
     const d = new Date(b);
     expect(d.getDay()).toBe(1); // Monday
     expect(d.getHours()).toBe(0);
+  });
+
+  describe('estimateMissingActivity', () => {
+    // Build a prompt-day shape mirroring the server payload.
+    function pd(date: string, byProject: Record<string, number>): PromptDay {
+      const d = new Date(date + 'T00:00:00');
+      const count = Object.values(byProject).reduce((s, n) => s + n, 0);
+      return { date, ms: d.getTime(), count, byProject };
+    }
+
+    const t = (iso: string) => Date.parse(iso);
+
+    it('returns zero estimate when no days are missing', () => {
+      // A day with both signals → no missing data to reconstruct.
+      const e = entry({ t: t('2026-04-15T10:00:00') });
+      const prompts: PromptDay[] = [pd('2026-04-15', { foo: 5 })];
+      const r = estimateMissingActivity(
+        [e],
+        prompts,
+        t('2026-04-10T00:00:00'),
+        t('2026-04-20T00:00:00'),
+      );
+      expect(r.missingDays).toBe(0);
+      expect(r.missingPrompts).toBe(0);
+      expect(r.estimatedCost).toBe(0);
+    });
+
+    it('estimates lost cost using per-project rate when there are enough samples', () => {
+      // Build a project ('foo') with 100 prompts that produced known cost,
+      // then a missing day with 50 prompts on the same project. Estimate
+      // should equal exactly 50 × per-prompt rate.
+      const sampleDate = '2026-04-15';
+      // 100 entries of identical cost on the sample day, paired with 100
+      // prompts that day → per-prompt rate = entryCost.
+      const sampleEntries: Entry[] = [];
+      for (let i = 0; i < 100; i++) {
+        sampleEntries.push(
+          entry({
+            t: t(`${sampleDate}T10:${String(i % 60).padStart(2, '0')}:00`),
+            s: `sess-${i}`,
+            p: 'foo',
+          }),
+        );
+      }
+      const onePromptCost =
+        sampleEntries.reduce((s, e) => s + 0, 0); // ignore — recompute via fn
+      // Use the aggregate's own daily() indirectly via totals to compute
+      // expected cost (avoids re-importing the pricing tables).
+      const sampleCost = totals(sampleEntries).cost;
+      const rate = sampleCost / 100;
+      expect(rate).toBeGreaterThan(0);
+
+      const prompts: PromptDay[] = [
+        pd(sampleDate, { foo: 100 }),
+        // Missing day: prompts exist, no entries
+        pd('2026-04-20', { foo: 50 }),
+      ];
+
+      const r = estimateMissingActivity(
+        sampleEntries,
+        prompts,
+        t('2026-04-10T00:00:00'),
+        t('2026-04-25T00:00:00'),
+      );
+      expect(r.missingDays).toBe(1);
+      expect(r.missingPrompts).toBe(50);
+      // 50 prompts × rate, within float tolerance.
+      expect(r.estimatedCost).toBeCloseTo(50 * rate, 5);
+      expect(r.byDate.get('2026-04-20')?.prompts).toBe(50);
+    });
+
+    it('falls back to global rate when a project lacks enough samples', () => {
+      // Project 'tiny' has only 3 sample prompts → below MIN_PROMPTS_FOR_PROJECT_RATE.
+      // Should fall back to the global rate derived from all sample days.
+      const sampleEntries: Entry[] = [];
+      for (let i = 0; i < 50; i++) {
+        sampleEntries.push(
+          entry({
+            t: t(`2026-04-15T10:${String(i % 60).padStart(2, '0')}:00`),
+            s: `sess-A-${i}`,
+            p: 'big',
+          }),
+        );
+      }
+      for (let i = 0; i < 3; i++) {
+        sampleEntries.push(
+          entry({
+            t: t(`2026-04-15T12:0${i}:00`),
+            s: `sess-B-${i}`,
+            p: 'tiny',
+          }),
+        );
+      }
+      const prompts: PromptDay[] = [
+        pd('2026-04-15', { big: 50, tiny: 3 }),
+        pd('2026-04-20', { tiny: 10 }),
+      ];
+
+      const r = estimateMissingActivity(
+        sampleEntries,
+        prompts,
+        t('2026-04-10T00:00:00'),
+        t('2026-04-25T00:00:00'),
+      );
+      expect(r.missingDays).toBe(1);
+      expect(r.missingPrompts).toBe(10);
+      // Estimate should be positive (used global rate, not zeroed out).
+      expect(r.estimatedCost).toBeGreaterThan(0);
+    });
   });
 });

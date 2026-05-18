@@ -140,10 +140,13 @@ export function ActivityHeatmap({
                 );
               }
               const sel = selectedDayMs === c.day.ms;
+              const isMissing = mode === 'cost' && c.day.missing === true;
               return (
                 <div
                   key={c.day.date}
-                  className={`heatmap-cell l${c.level}${sel ? ' selected' : ''}`}
+                  className={`heatmap-cell l${c.level}${sel ? ' selected' : ''}${
+                    isMissing ? ' missing' : ''
+                  }`}
                   style={{ gridColumn: c.col + 1, gridRow: c.row + 1 }}
                   onMouseEnter={(e) =>
                     setHover({ day: c.day, anchor: e.currentTarget.getBoundingClientRect() })
@@ -221,9 +224,17 @@ function HeatmapTooltip({
     setPos({ left, top });
   }, [anchor, day]);
 
-  const primary = mode === 'cost' ? fmtMoney(day.value) : `${day.count.toLocaleString()} prompts`;
-  const secondary =
-    mode === 'cost' ? `${day.count.toLocaleString()} requests` : undefined;
+  const isMissing = mode === 'cost' && day.missing === true;
+  const primary = isMissing
+    ? `~${fmtMoney(day.estimatedCost ?? 0)} est.`
+    : mode === 'cost'
+      ? fmtMoney(day.value)
+      : `${day.count.toLocaleString()} prompts`;
+  const secondary = isMissing
+    ? `${day.count.toLocaleString()} prompts · session data gone`
+    : mode === 'cost'
+      ? `${day.count.toLocaleString()} requests`
+      : undefined;
 
   return (
     <div
@@ -280,7 +291,9 @@ function HeatmapTooltip({
           </span>
         </div>
       ))}
-      {day.value === 0 && <div style={{ color: 'var(--t-3)' }}>no activity</div>}
+      {day.value === 0 && !isMissing && (
+        <div style={{ color: 'var(--t-3)' }}>no activity</div>
+      )}
     </div>
   );
 }

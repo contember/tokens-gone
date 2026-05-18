@@ -5,7 +5,7 @@
  * single-pass for-loops, and reuse the input shape where possible.
  */
 
-import type { Entry, Filters, SessionMeta } from './types.ts';
+import type { Entry, Filters, PromptDay, SessionMeta } from './types.ts';
 import { entryHarness } from './types.ts';
 import { costForEntry } from './pricing.ts';
 
@@ -181,16 +181,143 @@ export type HeatmapDay = {
   /** Top-N breakdown for the tooltip. Keys are model IDs in cost mode and
    * project names in prompts mode. */
   breakdown: Map<string, number>;
+  /** True in cost mode when prompts exist for this day but session JSONLs
+   * were swept — cell is a known data hole, not a true zero. */
+  missing?: boolean;
+  /** Estimated cost for a missing day, derived from prompt-to-cost rates
+   * on days where both signals are intact. */
+  estimatedCost?: number;
 };
 
-export function dayStatsToHeatmap(days: DayStat[]): HeatmapDay[] {
-  return days.map((d) => ({
-    date: d.date,
-    ms: d.ms,
-    value: d.cost,
-    count: d.count,
-    breakdown: d.byModel,
-  }));
+export function dayStatsToHeatmap(
+  days: DayStat[],
+  missing?: Map<string, { prompts: number; estimatedCost: number }>,
+): HeatmapDay[] {
+  return days.map((d) => {
+    const m = missing?.get(d.date);
+    if (m && d.cost === 0 && m.prompts > 0) {
+      return {
+        date: d.date,
+        ms: d.ms,
+        value: 0,
+        count: m.prompts,
+        breakdown: d.byModel,
+        missing: true,
+        estimatedCost: m.estimatedCost,
+      };
+    }
+    return {
+      date: d.date,
+      ms: d.ms,
+      value: d.cost,
+      count: d.count,
+      breakdown: d.byModel,
+    };
+  });
+}
+
+export type MissingActivity = {
+  /** Days that have prompts but no session entries (cleanup-swept). */
+  missingDays: number;
+  /** Total prompts across those missing days. */
+  missingPrompts: number;
+  /** Cost reconstructed from per-project prompt-to-cost rates, summed
+   * across all missing days. Rough — it assumes a missing day's mix of
+   * work matches the user's observed mix on intact days. */
+  estimatedCost: number;
+  /** Per-date detail so the heatmap can mark and label individual cells. */
+  byDate: Map<string, { prompts: number; estimatedCost: number }>;
+};
+
+/**
+ * Reconstruct a rough cost for days where `history.jsonl` has prompts but
+ * the session JSONLs were swept by `cleanupPeriodDays`. We compute a
+ * per-project cost-per-prompt rate from days that retain both signals,
+ * then multiply that by the missing days' per-project prompt counts. A
+ * project with too few sample points (or none at all) falls back to a
+ * global rate.
+ *
+ * This is a best-effort estimate, not an accounting figure — the user's
+ * prompt mix varies day to day, and rare expensive prompts can skew rates.
+ * We bias toward "rough and labeled as such" over "precise and silent".
+ */
+export function estimateMissingActivity(
+  entries: Entry[],
+  promptDays: PromptDay[],
+  fromMs: number,
+  toMs: number,
+): MissingActivity {
+  const fromDay = startOfDay(fromMs);
+  const toDay = startOfDay(toMs - 1);
+
+  // (date, project) → cost from session entries.
+  const costByDateProject = new Map<string, number>();
+  // (date) → total cost (used to decide if a day has any session data).
+  const costByDate = new Map<string, number>();
+  for (const e of entries) {
+    if (e.t < fromDay || e.t >= toDay + 86400000) continue;
+    const date = dayKey(e.t);
+    const c = costForEntry(e);
+    if (c === 0) continue;
+    const k = `${date}|${e.p}`;
+    costByDateProject.set(k, (costByDateProject.get(k) ?? 0) + c);
+    costByDate.set(date, (costByDate.get(date) ?? 0) + c);
+  }
+
+  // Sample per-project rates from days where both signals are intact.
+  const projectStats = new Map<string, { cost: number; prompts: number }>();
+  let globalCost = 0;
+  let globalPrompts = 0;
+  for (const pd of promptDays) {
+    if (pd.ms < fromDay || pd.ms > toDay) continue;
+    if (!costByDate.has(pd.date)) continue;
+    for (const [project, count] of Object.entries(pd.byProject)) {
+      const cost = costByDateProject.get(`${pd.date}|${project}`);
+      if (cost == null) continue;
+      let s = projectStats.get(project);
+      if (!s) {
+        s = { cost: 0, prompts: 0 };
+        projectStats.set(project, s);
+      }
+      s.cost += cost;
+      s.prompts += count;
+      globalCost += cost;
+      globalPrompts += count;
+    }
+  }
+
+  const globalRate = globalPrompts > 0 ? globalCost / globalPrompts : 0;
+  // Need a few sample prompts per project before trusting its rate;
+  // otherwise a one-off cheap day overfits and lowballs the estimate.
+  const MIN_PROMPTS_FOR_PROJECT_RATE = 20;
+  function rateFor(project: string): number {
+    const s = projectStats.get(project);
+    if (s && s.prompts >= MIN_PROMPTS_FOR_PROJECT_RATE && s.cost > 0) {
+      return s.cost / s.prompts;
+    }
+    return globalRate;
+  }
+
+  // Score missing days.
+  let missingDays = 0;
+  let missingPrompts = 0;
+  let estimatedCost = 0;
+  const byDate = new Map<string, { prompts: number; estimatedCost: number }>();
+  for (const pd of promptDays) {
+    if (pd.ms < fromDay || pd.ms > toDay) continue;
+    if (pd.count === 0) continue;
+    if (costByDate.has(pd.date)) continue;
+    let est = 0;
+    for (const [project, count] of Object.entries(pd.byProject)) {
+      est += count * rateFor(project);
+    }
+    missingDays++;
+    missingPrompts += pd.count;
+    estimatedCost += est;
+    byDate.set(pd.date, { prompts: pd.count, estimatedCost: est });
+  }
+
+  return { missingDays, missingPrompts, estimatedCost, byDate };
 }
 
 /**

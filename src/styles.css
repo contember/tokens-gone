@@ -272,6 +272,51 @@ a:hover {
   background: var(--accent-soft);
 }
 
+.missing-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  margin: 0 0 var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--r-1);
+  background: var(--ink-2);
+  font-size: 11px;
+  color: var(--t-2);
+  line-height: 1.5;
+}
+
+.missing-notice strong {
+  color: var(--t-1);
+  font-weight: 600;
+}
+
+.missing-notice code {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: var(--r-1);
+  background: var(--ink-1);
+  color: var(--t-2);
+}
+
+.missing-notice-swatch {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  margin-top: 2px;
+  border-radius: 2px;
+  background: var(--heat-0);
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent 0,
+    transparent 2px,
+    rgba(255, 255, 255, 0.18) 2px,
+    rgba(255, 255, 255, 0.18) 3px
+  );
+}
+
 /* ── footer ────────────────────────────────────────────── */
 
 .app-foot {
@@ -655,6 +700,21 @@ a:hover {
   transition: outline 60ms ease;
   outline: 1px solid transparent;
   outline-offset: 0;
+}
+
+.heatmap-cell.missing {
+  background: var(--heat-0);
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent 0,
+    transparent 2px,
+    rgba(255, 255, 255, 0.18) 2px,
+    rgba(255, 255, 255, 0.18) 3px
+  );
+}
+
+.heatmap-cell.missing:hover {
+  outline: 1px solid var(--t-3);
 }
 
 .heatmap-cell.l1 { background: var(--heat-1); }

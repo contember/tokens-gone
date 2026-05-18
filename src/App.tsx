@@ -5,11 +5,13 @@ import {
   applyFilters,
   daily,
   dayStatsToHeatmap,
+  estimateMissingActivity,
   promptDaysToHeatmap,
   recentBurn,
   sessions,
   type Totals,
 } from './aggregate';
+import { fmtMoney } from './format';
 import { costBreakdown } from './pricing';
 import { ActiveFilters } from './components/ActiveFilters';
 import { ActivityHeatmap, type HeatmapMode } from './components/ActivityHeatmap';
@@ -188,7 +190,24 @@ function Dashboard({
     [data.promptActivity, filters.projects, yearWindow],
   );
 
-  const costHeatmap = useMemo(() => dayStatsToHeatmap(yearDays), [yearDays]);
+  // Detect days where prompts exist but session entries don't — and put a
+  // rough cost on them so the user has a sense of how much the cleanup
+  // sweep cost them in lost accounting.
+  const missingActivity = useMemo(
+    () =>
+      estimateMissingActivity(
+        data.entries,
+        data.promptActivity ?? [],
+        yearWindow.from,
+        yearWindow.to,
+      ),
+    [data.entries, data.promptActivity, yearWindow],
+  );
+
+  const costHeatmap = useMemo(
+    () => dayStatsToHeatmap(yearDays, missingActivity.byDate),
+    [yearDays, missingActivity],
+  );
   const heatmapDays = heatmapMode === 'cost' ? costHeatmap : promptHeatmap;
 
   const stats = useMemo(() => activityStats(yearDays), [yearDays]);
@@ -265,6 +284,9 @@ function Dashboard({
             <HeatmapModeToggle mode={heatmapMode} onChange={setHeatmapMode} />
           </div>
         </div>
+        {missingActivity.missingDays > 0 && (
+          <MissingDataNotice missing={missingActivity} mode={heatmapMode} />
+        )}
         <ActivityHeatmap
           days={heatmapDays}
           mode={heatmapMode}
@@ -321,6 +343,40 @@ function Dashboard({
       <footer className="app-foot">
         <ThemeSwitch />
       </footer>
+    </div>
+  );
+}
+
+function MissingDataNotice({
+  missing,
+  mode,
+}: {
+  missing: { missingDays: number; missingPrompts: number; estimatedCost: number };
+  mode: HeatmapMode;
+}) {
+  return (
+    <div className="missing-notice" role="note">
+      <span className="missing-notice-swatch" aria-hidden />
+      <span>
+        <strong>{missing.missingDays}</strong> days are missing session data
+        (Claude Code's <code>cleanupPeriodDays</code> swept the JSONLs).
+        Prompts survived in <code>history.jsonl</code>, so we can{' '}
+        {mode === 'cost' ? (
+          <>
+            estimate lost spend at{' '}
+            <strong>~{fmtMoney(missing.estimatedCost)}</strong> across{' '}
+            {missing.missingPrompts.toLocaleString()} prompts — rough average
+            of cost-per-prompt on days with intact data.
+          </>
+        ) : (
+          <>
+            still chart them here. (Cost mode would mark these{' '}
+            {missing.missingDays} days as data holes;{' '}
+            <strong>~{fmtMoney(missing.estimatedCost)}</strong> est. lost
+            spend.)
+          </>
+        )}
+      </span>
     </div>
   );
 }
