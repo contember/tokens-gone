@@ -102,9 +102,16 @@ export function Hero({
 // that bursts of activity stop being visible.
 const RATE_WINDOW_PERIODS = 3;
 const RATE_WINDOW_SAMPLES = RATE_WINDOW_PERIODS + 1;
+// Cap how far past the latest sample we project. With a 5s polling
+// interval and 1.2x safety margin this keeps overshoot bounded even if
+// the next fetch is briefly late, but stops display from drifting wildly
+// when polling stalls.
+const MAX_LOOKAHEAD_MS = 6000;
+
+type Sample = { value: number; t: number };
 
 /** Average rate (value-per-ms) across the retained sample window. */
-function windowedRate(samples: { value: number; t: number }[]): number {
+function windowedRate(samples: Sample[]): number {
   if (samples.length < 2) return 0;
   const first = samples[0]!;
   const last = samples[samples.length - 1]!;
@@ -116,48 +123,73 @@ function windowedRate(samples: { value: number; t: number }[]): number {
 }
 
 /**
- * Forward-extrapolate a target value beyond its last update using the
- * burn rate averaged across the last `RATE_WINDOW_PERIODS` fetch
- * intervals. Strictly monotonic — if a new target arrives lower than
- * the current display the display pauses at its current value until the
- * actual catches back up.
- *
- * When `enabled` is false the display snaps to `target` and stays there;
- * we deliberately preserve no animation state so toggling live mode off
- * gives an instant "back to ground truth" feel.
+ * Maintain a rolling sample buffer that is *cleared* every time `enabled`
+ * flips from false to true. Without this, the first computed rate after
+ * re-enabling would include a stale sample from the previous live
+ * session (possibly minutes old), squashing the rate to near-zero and
+ * stalling the display. Returns the array; consumers can read `.length`
+ * and indices, and the reference is stable while live is enabled.
  */
-function useExtrapolated(target: number, enabled: boolean): number {
-  const [display, setDisplay] = useState(target);
-  const samplesRef = useRef<{ value: number; t: number }[]>([]);
+function useRollingSamples(target: number, enabled: boolean): Sample[] {
+  const samplesRef = useRef<Sample[]>([]);
+  const prevEnabledRef = useRef(false);
 
-  // Record a sample every time the target changes.
+  // Synchronous reset on enable transitions, so the very next render
+  // (and the raf loop that consumes the ref) sees the fresh buffer.
+  if (!enabled) {
+    if (prevEnabledRef.current) samplesRef.current = [];
+    prevEnabledRef.current = false;
+  } else if (!prevEnabledRef.current) {
+    samplesRef.current = [{ value: target, t: performance.now() }];
+    prevEnabledRef.current = true;
+  }
+
   useEffect(() => {
+    if (!enabled) return;
+    const last = samplesRef.current[samplesRef.current.length - 1];
+    // First sample after enable was seeded synchronously above; skip
+    // pushing a duplicate when the post-enable render commits.
+    if (last && last.value === target) return;
     samplesRef.current.push({ value: target, t: performance.now() });
     while (samplesRef.current.length > RATE_WINDOW_SAMPLES) {
       samplesRef.current.shift();
     }
-  }, [target]);
+  }, [target, enabled]);
+
+  return samplesRef.current;
+}
+
+/**
+ * Forward-project `target` past its last fetch using the windowed burn
+ * rate. `display = last.value + rate × min(elapsed, MAX_LOOKAHEAD_MS)`
+ * recomputed every animation frame.
+ *
+ * No monotonic Math.max guard. When a new fetch comes in with a lower
+ * rolling rate the display tracks the new projection — a tiny visible
+ * correction is fine; the alternative is freezing for tens of seconds
+ * when an earlier high-rate window has overshot reality. The lookahead
+ * cap keeps the bias to fractions of one window worth of burn.
+ *
+ * When `enabled` is false the consumer just gets `target` straight; we
+ * don't try to interpolate at all.
+ */
+function useExtrapolated(target: number, enabled: boolean): number {
+  const samples = useRollingSamples(target, enabled);
+  const [extrapolated, setExtrapolated] = useState(target);
 
   useEffect(() => {
-    if (!enabled) {
-      setDisplay(target);
-      samplesRef.current = [{ value: target, t: performance.now() }];
-      return;
-    }
-
+    if (!enabled) return;
     let raf = 0;
     let running = true;
     function tick() {
       if (!running) return;
-      const samples = samplesRef.current;
       if (samples.length >= 2) {
         const last = samples[samples.length - 1]!;
         const rate = windowedRate(samples);
-        const elapsed = performance.now() - last.t;
-        const projected = last.value + rate * elapsed;
-        setDisplay((cur) => Math.max(cur, projected, last.value));
+        const elapsed = Math.min(performance.now() - last.t, MAX_LOOKAHEAD_MS);
+        setExtrapolated(last.value + rate * elapsed);
       } else if (samples.length === 1) {
-        setDisplay(samples[0]!.value);
+        setExtrapolated(samples[0]!.value);
       }
       raf = requestAnimationFrame(tick);
     }
@@ -166,30 +198,13 @@ function useExtrapolated(target: number, enabled: boolean): number {
       running = false;
       cancelAnimationFrame(raf);
     };
-  }, [enabled, target]);
+  }, [enabled, samples]);
 
-  return display;
+  return enabled ? extrapolated : target;
 }
 
 function useBurnRate(target: number, enabled: boolean): number {
-  const samplesRef = useRef<{ value: number; t: number }[]>([]);
-  const [rate, setRate] = useState(0);
-
-  useEffect(() => {
-    samplesRef.current.push({ value: target, t: performance.now() });
-    while (samplesRef.current.length > RATE_WINDOW_SAMPLES) {
-      samplesRef.current.shift();
-    }
-    // windowedRate returns value-per-ms; surface value-per-second.
-    setRate(windowedRate(samplesRef.current) * 1000);
-  }, [target]);
-
-  useEffect(() => {
-    if (!enabled) {
-      setRate(0);
-      samplesRef.current = [];
-    }
-  }, [enabled]);
-
-  return rate;
+  const samples = useRollingSamples(target, enabled);
+  // windowedRate is value-per-ms; surface as value-per-second.
+  return enabled ? windowedRate(samples) * 1000 : 0;
 }
