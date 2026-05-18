@@ -166,6 +166,85 @@ export function weekBucket(t: number): number {
   return ms;
 }
 
+/**
+ * Unified shape consumed by the activity heatmap. Both the cost-based
+ * timeline (from session entries) and the prompt-based timeline (from
+ * `history.jsonl`) project onto this so the heatmap renders one way.
+ */
+export type HeatmapDay = {
+  date: string;
+  ms: number;
+  /** Drives cell intensity (cost in $ or prompt count, depending on mode). */
+  value: number;
+  /** Raw request/prompt count for the day — always shown in tooltip. */
+  count: number;
+  /** Top-N breakdown for the tooltip. Keys are model IDs in cost mode and
+   * project names in prompts mode. */
+  breakdown: Map<string, number>;
+};
+
+export function dayStatsToHeatmap(days: DayStat[]): HeatmapDay[] {
+  return days.map((d) => ({
+    date: d.date,
+    ms: d.ms,
+    value: d.cost,
+    count: d.count,
+    breakdown: d.byModel,
+  }));
+}
+
+/**
+ * Densify a sparse `PromptDay[]` into a `HeatmapDay[]` covering [from, to).
+ * Mirrors `daily()`'s densification so the heatmap can render empty cells
+ * for days with no prompts.
+ */
+export function promptDaysToHeatmap(
+  prompts: Array<{ date: string; ms: number; count: number; byProject: Record<string, number> }>,
+  from: number,
+  to: number,
+  projectFilter?: Set<string>,
+): HeatmapDay[] {
+  const map = new Map<string, HeatmapDay>();
+  for (const p of prompts) {
+    let count = p.count;
+    let byProject = p.byProject;
+    if (projectFilter && projectFilter.size > 0) {
+      let filteredCount = 0;
+      const filtered: Record<string, number> = {};
+      for (const [proj, c] of Object.entries(p.byProject)) {
+        if (projectFilter.has(proj)) {
+          filtered[proj] = c;
+          filteredCount += c;
+        }
+      }
+      if (filteredCount === 0) continue;
+      count = filteredCount;
+      byProject = filtered;
+    }
+    map.set(p.date, {
+      date: p.date,
+      ms: p.ms,
+      value: count,
+      count,
+      breakdown: new Map(Object.entries(byProject)),
+    });
+  }
+  const out: HeatmapDay[] = [];
+  for (let d = startOfDay(from); d <= startOfDay(to - 1); d += 86400000) {
+    const k = isoDateFromMs(d);
+    out.push(
+      map.get(k) ?? {
+        date: k,
+        ms: d,
+        value: 0,
+        count: 0,
+        breakdown: new Map(),
+      },
+    );
+  }
+  return out;
+}
+
 export type DayStat = {
   /** Local-time YYYY-MM-DD. */
   date: string;

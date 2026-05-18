@@ -4,13 +4,15 @@ import {
   activityStats,
   applyFilters,
   daily,
+  dayStatsToHeatmap,
+  promptDaysToHeatmap,
   recentBurn,
   sessions,
   type Totals,
 } from './aggregate';
 import { costBreakdown } from './pricing';
 import { ActiveFilters } from './components/ActiveFilters';
-import { ActivityHeatmap } from './components/ActivityHeatmap';
+import { ActivityHeatmap, type HeatmapMode } from './components/ActivityHeatmap';
 import { BreakdownTable } from './components/BreakdownTable';
 import { Hero } from './components/Hero';
 import { HourGrid } from './components/HourGrid';
@@ -148,24 +150,46 @@ function Dashboard({
   const t = aggregates.t;
   const costByType = aggregates.costByType;
 
+  const [heatmapMode, setHeatmapMode] = useState<HeatmapMode>('cost');
+
+  const yearWindow = useMemo(() => {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const today = todayStart.getTime();
+    return { from: today - 364 * 86400000, to: today + 86400000 };
+  }, []);
+
   // Heatmap always covers a full year ending today. Date filters are
   // ignored (so the heatmap context is preserved when drilling in via a
   // cell click), but model/project filters apply.
   const yearDays = useMemo(() => {
     if (data.entries.length === 0) return [];
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const today = todayStart.getTime();
-    const from = today - 364 * 86400000;
     const yearEntries = applyFilters(data.entries, {
-      from,
+      from: yearWindow.from,
       to: null,
       projects: filters.projects,
       models: filters.models,
       harnesses: filters.harnesses,
     });
-    return daily(yearEntries, from, today + 86400000);
-  }, [data.entries, filters.projects, filters.models, filters.harnesses]);
+    return daily(yearEntries, yearWindow.from, yearWindow.to);
+  }, [data.entries, filters.projects, filters.models, filters.harnesses, yearWindow]);
+
+  // Prompt history is independent of session JSONLs and survives Claude
+  // Code's cleanupPeriodDays sweep — so this is the only data source that
+  // covers periods where session files have been pruned.
+  const promptHeatmap = useMemo(
+    () =>
+      promptDaysToHeatmap(
+        data.promptActivity ?? [],
+        yearWindow.from,
+        yearWindow.to,
+        filters.projects,
+      ),
+    [data.promptActivity, filters.projects, yearWindow],
+  );
+
+  const costHeatmap = useMemo(() => dayStatsToHeatmap(yearDays), [yearDays]);
+  const heatmapDays = heatmapMode === 'cost' ? costHeatmap : promptHeatmap;
 
   const stats = useMemo(() => activityStats(yearDays), [yearDays]);
   const burn = useMemo(() => recentBurn(filtered), [filtered]);
@@ -236,10 +260,14 @@ function Dashboard({
       <div className="section">
         <div className="section-head">
           <h2>Activity · past year</h2>
-          <span className="meta">click any day to drill in</span>
+          <div className="head-right">
+            <span className="meta">click any day to drill in</span>
+            <HeatmapModeToggle mode={heatmapMode} onChange={setHeatmapMode} />
+          </div>
         </div>
         <ActivityHeatmap
-          days={yearDays}
+          days={heatmapDays}
+          mode={heatmapMode}
           selectedDayMs={selectedDayMs}
           onDayClick={toggleDay}
         />
@@ -293,6 +321,35 @@ function Dashboard({
       <footer className="app-foot">
         <ThemeSwitch />
       </footer>
+    </div>
+  );
+}
+
+function HeatmapModeToggle({
+  mode,
+  onChange,
+}: {
+  mode: HeatmapMode;
+  onChange: (m: HeatmapMode) => void;
+}) {
+  return (
+    <div className="seg-switch" role="group" aria-label="Heatmap metric">
+      <button
+        type="button"
+        aria-pressed={mode === 'cost'}
+        onClick={() => onChange('cost')}
+        title="Color cells by cost (incomplete past cleanup window)"
+      >
+        Cost
+      </button>
+      <button
+        type="button"
+        aria-pressed={mode === 'prompts'}
+        onClick={() => onChange('prompts')}
+        title="Color cells by prompt count (complete history)"
+      >
+        Prompts
+      </button>
     </div>
   );
 }

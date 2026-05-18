@@ -1,26 +1,29 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { DayStat } from '../aggregate';
+import type { HeatmapDay } from '../aggregate';
 import { fmtMoney, modelShort, modelClass } from '../format';
 
 const MONTH_LABELS = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
 
+export type HeatmapMode = 'cost' | 'prompts';
+
 /**
- * GitHub-style contribution grid scaled to Claude Code spend. Cells are
- * one day each, color intensity bucketed by cost. Click toggles a single-
- * day filter via `onDayClick`; the currently filtered day (if it is a
- * single-day window) gets a ring.
+ * GitHub-style contribution grid. Cells are one day each; intensity is
+ * bucketed by `day.value`, which is dollars in cost mode and prompt count
+ * in prompts mode. Click toggles a single-day filter via `onDayClick`.
  *
- * Buckets use quantile-ish thresholds derived from the data's own
- * distribution, so a quiet user and a heavy user both get a readable
- * gradient — fixed dollar thresholds would either crush a quiet user's
- * data to one shade or saturate a heavy user's at the top bucket.
+ * Buckets use quantile-ish thresholds (p20/p50/p80/p95) derived from the
+ * data's own distribution, so a quiet user and a heavy user both get a
+ * readable gradient — fixed thresholds would either crush the quiet
+ * user's data to one shade or saturate a heavy user's at the top bucket.
  */
 export function ActivityHeatmap({
   days,
+  mode,
   selectedDayMs,
   onDayClick,
 }: {
-  days: DayStat[];
+  days: HeatmapDay[];
+  mode: HeatmapMode;
   selectedDayMs: number | null;
   onDayClick: (dayMs: number | null) => void;
 }) {
@@ -40,23 +43,21 @@ export function ActivityHeatmap({
     const padHead = dowFirst;
     const padTail = 6 - dowLast;
 
-    const sequence: (DayStat | null)[] = [];
+    const sequence: (HeatmapDay | null)[] = [];
     for (let i = 0; i < padHead; i++) sequence.push(null);
     for (const d of days) sequence.push(d);
     for (let i = 0; i < padTail; i++) sequence.push(null);
 
-    // Derive thresholds from active days only so empty cells don't skew
-    // the distribution. p20 / p50 / p80 / p95 give four visible tiers.
-    const costs = days.filter((d) => d.cost > 0).map((d) => d.cost).sort((a, b) => a - b);
+    const values = days.filter((d) => d.value > 0).map((d) => d.value).sort((a, b) => a - b);
     const q = (p: number) =>
-      costs.length === 0 ? 0 : costs[Math.min(costs.length - 1, Math.floor(costs.length * p))]!;
+      values.length === 0 ? 0 : values[Math.min(values.length - 1, Math.floor(values.length * p))]!;
     const thresholds = [q(0.2), q(0.5), q(0.8), q(0.95)];
 
-    function level(cost: number): 0 | 1 | 2 | 3 | 4 {
-      if (cost <= 0) return 0;
-      if (cost <= thresholds[0]!) return 1;
-      if (cost <= thresholds[1]!) return 2;
-      if (cost <= thresholds[2]!) return 3;
+    function level(v: number): 0 | 1 | 2 | 3 | 4 {
+      if (v <= 0) return 0;
+      if (v <= thresholds[0]!) return 1;
+      if (v <= thresholds[1]!) return 2;
+      if (v <= thresholds[2]!) return 3;
       return 4;
     }
 
@@ -67,12 +68,10 @@ export function ActivityHeatmap({
         col: Math.floor(idx / 7),
         row: idx % 7,
         day: d,
-        level: level(d.cost),
+        level: level(d.value),
       };
     });
 
-    // Build month-label column positions. Place the label at the column
-    // where a month first appears in the top row of that column's week.
     const monthCols: MonthCol[] = [];
     let lastMonth = -1;
     for (let c = 0; c < cells.length / 7; c++) {
@@ -86,22 +85,22 @@ export function ActivityHeatmap({
       }
     }
 
-    const total = days.reduce((s, d) => s + d.cost, 0);
-    const activeCells = days.filter((d) => d.cost > 0).length;
-    const max = costs[costs.length - 1] ?? 0;
+    const total = days.reduce((s, d) => s + d.value, 0);
+    const activeCells = days.filter((d) => d.value > 0).length;
+    const max = values[values.length - 1] ?? 0;
 
     return { cells, monthCols, total, activeCells, max };
   }, [days]);
 
-  const [hover, setHover] = useState<{ day: DayStat; anchor: DOMRect } | null>(null);
+  const [hover, setHover] = useState<{ day: HeatmapDay; anchor: DOMRect } | null>(null);
 
   if (days.length === 0) {
     return <div className="empty">No activity to chart</div>;
   }
 
-  // Position the hover tooltip relative to the cell. We track via state
-  // (not CSS hover) so we can show structured content.
   const cols = cells.length / 7;
+  const fmt = mode === 'cost' ? fmtMoney : fmtPrompts;
+  const totalLabel = mode === 'cost' ? `total ${fmt(total)}` : `total ${fmt(total)}`;
 
   return (
     <div>
@@ -158,7 +157,9 @@ export function ActivityHeatmap({
         </div>
       </div>
       <div className="heatmap-legend">
-        <span>{activeCells}/{days.length} active days · max {fmtMoney(max)}/day · total {fmtMoney(total)}</span>
+        <span>
+          {activeCells}/{days.length} active days · max {fmt(max)}/day · {totalLabel}
+        </span>
         <span className="spacer" />
         <span>less</span>
         <span className="cell" style={{ background: 'var(--heat-0)' }} />
@@ -168,14 +169,27 @@ export function ActivityHeatmap({
         <span className="cell" style={{ background: 'var(--heat-4)' }} />
         <span>more</span>
       </div>
-      {hover && <HeatmapTooltip day={hover.day} anchor={hover.anchor} />}
+      {hover && <HeatmapTooltip day={hover.day} anchor={hover.anchor} mode={mode} />}
     </div>
   );
 }
 
-function HeatmapTooltip({ day, anchor }: { day: DayStat; anchor: DOMRect }) {
+function fmtPrompts(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
+  return `${Math.round(n)}`;
+}
+
+function HeatmapTooltip({
+  day,
+  anchor,
+  mode,
+}: {
+  day: HeatmapDay;
+  anchor: DOMRect;
+  mode: HeatmapMode;
+}) {
   const top = useMemo(() => {
-    const sorted = [...day.byModel.entries()].sort((a, b) => b[1] - a[1]);
+    const sorted = [...day.breakdown.entries()].sort((a, b) => b[1] - a[1]);
     return sorted.slice(0, 3);
   }, [day]);
   const d = new Date(day.ms);
@@ -207,6 +221,10 @@ function HeatmapTooltip({ day, anchor }: { day: DayStat; anchor: DOMRect }) {
     setPos({ left, top });
   }, [anchor, day]);
 
+  const primary = mode === 'cost' ? fmtMoney(day.value) : `${day.count.toLocaleString()} prompts`;
+  const secondary =
+    mode === 'cost' ? `${day.count.toLocaleString()} requests` : undefined;
+
   return (
     <div
       ref={ref}
@@ -230,14 +248,16 @@ function HeatmapTooltip({ day, anchor }: { day: DayStat; anchor: DOMRect }) {
         {label}
       </div>
       <div style={{ fontFamily: 'var(--mono)', fontSize: 16, color: 'var(--t-1)', marginBottom: 6, letterSpacing: '-0.02em' }}>
-        {fmtMoney(day.cost)}
+        {primary}
       </div>
-      <div style={{ color: 'var(--t-3)', fontSize: 11, marginBottom: top.length ? 6 : 0 }}>
-        {day.count.toLocaleString()} requests
-      </div>
-      {top.map(([m, c]) => (
+      {secondary && (
+        <div style={{ color: 'var(--t-3)', fontSize: 11, marginBottom: top.length ? 6 : 0 }}>
+          {secondary}
+        </div>
+      )}
+      {top.map(([k, v]) => (
         <div
-          key={m}
+          key={k}
           style={{
             display: 'flex',
             justifyContent: 'space-between',
@@ -247,20 +267,26 @@ function HeatmapTooltip({ day, anchor }: { day: DayStat; anchor: DOMRect }) {
           }}
         >
           <span>
-            <span className={`tag ${modelClass(m)}`} style={{ fontSize: 10, padding: '0 4px' }}>
-              {modelShort(m)}
-            </span>
+            {mode === 'cost' ? (
+              <span className={`tag ${modelClass(k)}`} style={{ fontSize: 10, padding: '0 4px' }}>
+                {modelShort(k)}
+              </span>
+            ) : (
+              <span style={{ fontSize: 11 }}>{k}</span>
+            )}
           </span>
-          <span style={{ fontFamily: 'var(--mono)' }}>{fmtMoney(c)}</span>
+          <span style={{ fontFamily: 'var(--mono)' }}>
+            {mode === 'cost' ? fmtMoney(v) : v.toLocaleString()}
+          </span>
         </div>
       ))}
-      {day.cost === 0 && <div style={{ color: 'var(--t-3)' }}>no activity</div>}
+      {day.value === 0 && <div style={{ color: 'var(--t-3)' }}>no activity</div>}
     </div>
   );
 }
 
 type Cell =
   | { kind: 'pad'; col: number; row: number }
-  | { kind: 'day'; col: number; row: number; day: DayStat; level: 0 | 1 | 2 | 3 | 4 };
+  | { kind: 'day'; col: number; row: number; day: HeatmapDay; level: 0 | 1 | 2 | 3 | 4 };
 
 type MonthCol = { col: number; label: string };

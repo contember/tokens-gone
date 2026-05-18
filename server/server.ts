@@ -17,6 +17,7 @@ import { extname, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { PROVIDERS, type Provider, type ProviderScanStats } from './providers/index.ts';
+import { loadPromptDays, type PromptDay } from './promptHistory.ts';
 import type { Entry, SessionMeta } from './types.ts';
 
 type ProviderInfo = {
@@ -33,6 +34,7 @@ type Cache = {
   sessionMeta: Record<string, SessionMeta>;
   stats: ProviderScanStats;
   providers: ProviderInfo[];
+  promptActivity: PromptDay[];
   generatedAt: number;
 };
 
@@ -99,12 +101,25 @@ const EMPTY_STATS: ProviderScanStats = {
   tookMs: 0,
 };
 
+// Heatmap renders ~365 days; load a bit more so monthly view boundaries
+// have headroom and the first run doesn't truncate just-recent activity.
+const PROMPT_HISTORY_WINDOW_DAYS = 400;
+
+async function runScan(): Promise<Omit<Cache, 'generatedAt'>> {
+  const promptFromMs = Date.now() - PROMPT_HISTORY_WINDOW_DAYS * 86400000;
+  const [providerResults, promptActivity] = await Promise.all([
+    scanProviders(),
+    loadPromptDays({ fromMs: promptFromMs }).catch(() => [] as PromptDay[]),
+  ]);
+  return { ...providerResults, promptActivity };
+}
+
 /**
  * Scan every detected provider in parallel and merge. Undetected providers
  * still appear in the result with empty stats so the UI can show "Codex:
  * not detected" without special-casing.
  */
-async function runScan(): Promise<Omit<Cache, 'generatedAt'>> {
+async function scanProviders(): Promise<Omit<Cache, 'generatedAt' | 'promptActivity'>> {
   const results = await Promise.all(
     PROVIDERS.map(async (p) => {
       const dataDir = p.defaultDataDir();
@@ -210,6 +225,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         sessionMeta: cached!.sessionMeta,
         stats: cached!.stats,
         providers: cached!.providers,
+        promptActivity: cached!.promptActivity,
         generatedAt: cached!.generatedAt,
       });
       return;

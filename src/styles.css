@@ -234,6 +234,44 @@ a:hover {
   letter-spacing: 0.02em;
 }
 
+.section-head .head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+.seg-switch {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--r-1);
+  overflow: hidden;
+}
+
+.seg-switch button {
+  border: none;
+  border-radius: 0;
+  padding: 3px 9px;
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  color: var(--t-3);
+  background: transparent;
+  cursor: pointer;
+}
+
+.seg-switch button + button {
+  border-left: 1px solid var(--line);
+}
+
+.seg-switch button:hover:not([aria-pressed='true']) {
+  color: var(--t-1);
+  background: var(--ink-2);
+}
+
+.seg-switch button[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
 /* ── footer ────────────────────────────────────────────── */
 
 .app-foot {

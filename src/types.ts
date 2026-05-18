@@ -33,6 +33,17 @@ export type ProviderInfo = {
   stats: ProviderStats;
 };
 
+export type PromptDay = {
+  /** Local-time YYYY-MM-DD. */
+  date: string;
+  /** ms since epoch at local midnight. */
+  ms: number;
+  /** Total prompts submitted that day. */
+  count: number;
+  /** Per-project prompt counts. */
+  byProject: Record<string, number>;
+};
+
 export type ApiData = {
   entries: Entry[];
   sessionMeta: Record<string, SessionMeta>;
@@ -40,6 +51,14 @@ export type ApiData = {
   stats: ProviderStats;
   /** One entry per registered provider, detected or not. */
   providers: ProviderInfo[];
+  /**
+   * Per-day prompt counts read from `~/.claude/history.jsonl`. Distinct
+   * from `entries` (assistant usage logs) because Claude Code's
+   * `cleanupPeriodDays` deletes session JSONLs but leaves history.jsonl,
+   * so this is the only complete record of "did the user run Claude on
+   * day X" once sessions age out.
+   */
+  promptActivity: PromptDay[];
   generatedAt: number;
 };
 
