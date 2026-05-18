@@ -96,11 +96,31 @@ export function Hero({
   );
 }
 
+// Number of fetch intervals to average the burn rate over. Three windows
+// (≈15s at the default 5s tick) smooths out the lumpiness of streaming
+// chunks landing in one tick vs another, without lagging so far behind
+// that bursts of activity stop being visible.
+const RATE_WINDOW_PERIODS = 3;
+const RATE_WINDOW_SAMPLES = RATE_WINDOW_PERIODS + 1;
+
+/** Average rate (value-per-ms) across the retained sample window. */
+function windowedRate(samples: { value: number; t: number }[]): number {
+  if (samples.length < 2) return 0;
+  const first = samples[0]!;
+  const last = samples[samples.length - 1]!;
+  const dt = last.t - first.t;
+  if (dt <= 0) return 0;
+  // Clamp non-negative: entries only grow, so a negative delta means
+  // filters changed underneath us or the server reset — never rewind.
+  return Math.max(0, (last.value - first.value) / dt);
+}
+
 /**
  * Forward-extrapolate a target value beyond its last update using the
- * rate observed between the previous two updates. Strictly monotonic —
- * if a new target arrives lower than the current display, the display
- * pauses at its current value until the actual catches back up.
+ * burn rate averaged across the last `RATE_WINDOW_PERIODS` fetch
+ * intervals. Strictly monotonic — if a new target arrives lower than
+ * the current display the display pauses at its current value until the
+ * actual catches back up.
  *
  * When `enabled` is false the display snaps to `target` and stays there;
  * we deliberately preserve no animation state so toggling live mode off
@@ -113,7 +133,9 @@ function useExtrapolated(target: number, enabled: boolean): number {
   // Record a sample every time the target changes.
   useEffect(() => {
     samplesRef.current.push({ value: target, t: performance.now() });
-    if (samplesRef.current.length > 3) samplesRef.current.shift();
+    while (samplesRef.current.length > RATE_WINDOW_SAMPLES) {
+      samplesRef.current.shift();
+    }
   }, [target]);
 
   useEffect(() => {
@@ -130,11 +152,7 @@ function useExtrapolated(target: number, enabled: boolean): number {
       const samples = samplesRef.current;
       if (samples.length >= 2) {
         const last = samples[samples.length - 1]!;
-        const prev = samples[samples.length - 2]!;
-        const dt = last.t - prev.t;
-        // Clamp the rate non-negative — entries only grow, so a negative
-        // delta means filters changed underneath us (snap, don't rewind).
-        const rate = dt > 0 ? Math.max(0, (last.value - prev.value) / dt) : 0;
+        const rate = windowedRate(samples);
         const elapsed = performance.now() - last.t;
         const projected = last.value + rate * elapsed;
         setDisplay((cur) => Math.max(cur, projected, last.value));
@@ -159,17 +177,18 @@ function useBurnRate(target: number, enabled: boolean): number {
 
   useEffect(() => {
     samplesRef.current.push({ value: target, t: performance.now() });
-    if (samplesRef.current.length > 3) samplesRef.current.shift();
-    if (samplesRef.current.length >= 2) {
-      const last = samplesRef.current[samplesRef.current.length - 1]!;
-      const prev = samplesRef.current[samplesRef.current.length - 2]!;
-      const dt = (last.t - prev.t) / 1000;
-      setRate(dt > 0 ? Math.max(0, (last.value - prev.value) / dt) : 0);
+    while (samplesRef.current.length > RATE_WINDOW_SAMPLES) {
+      samplesRef.current.shift();
     }
+    // windowedRate returns value-per-ms; surface value-per-second.
+    setRate(windowedRate(samplesRef.current) * 1000);
   }, [target]);
 
   useEffect(() => {
-    if (!enabled) setRate(0);
+    if (!enabled) {
+      setRate(0);
+      samplesRef.current = [];
+    }
   }, [enabled]);
 
   return rate;
