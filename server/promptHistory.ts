@@ -25,6 +25,10 @@ export type PromptDay = {
   count: number;
   /** Per-project prompt counts (project = basename of the cwd). */
   byProject: Record<string, number>;
+  /** Per-session prompt counts. Lets the client detect "orphan" prompts —
+   * a prompt whose session JSONL was wiped vs one whose session still has
+   * entries (possibly on a neighbouring day, e.g. across midnight). */
+  bySession: Record<string, number>;
 };
 
 function defaultHistoryPath(): string {
@@ -70,7 +74,7 @@ export async function loadPromptDays(opts: LoadPromptDaysOptions = {}): Promise<
     // lines without paying for JSON.parse.
     if (line.indexOf('"timestamp"') === -1) continue;
 
-    let rec: { timestamp?: number; project?: string };
+    let rec: { timestamp?: number; project?: string; sessionId?: string };
     try {
       rec = JSON.parse(line);
     } catch {
@@ -85,12 +89,20 @@ export async function loadPromptDays(opts: LoadPromptDaysOptions = {}): Promise<
     const dayMs = localDayMs(t);
     let day = byDay.get(dayMs);
     if (!day) {
-      day = { date: isoDateFromMs(dayMs), ms: dayMs, count: 0, byProject: {} };
+      day = {
+        date: isoDateFromMs(dayMs),
+        ms: dayMs,
+        count: 0,
+        byProject: {},
+        bySession: {},
+      };
       byDay.set(dayMs, day);
     }
     day.count++;
     const project = typeof rec.project === 'string' ? basename(rec.project) : '';
     if (project) day.byProject[project] = (day.byProject[project] ?? 0) + 1;
+    const sessionId = typeof rec.sessionId === 'string' ? rec.sessionId : '';
+    if (sessionId) day.bySession[sessionId] = (day.bySession[sessionId] ?? 0) + 1;
   }
 
   return [...byDay.values()].sort((a, b) => a.ms - b.ms);

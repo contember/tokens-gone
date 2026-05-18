@@ -217,12 +217,15 @@ export function dayStatsToHeatmap(
 }
 
 export type MissingActivity = {
-  /** Days that have prompts but no session entries (cleanup-swept). */
-  missingDays: number;
-  /** Total prompts across those missing days. */
+  /** Days where at least one prompt's session has no entries. */
+  affectedDays: number;
+  /** Subset of `affectedDays`: days where every prompt is orphan (the
+   * heatmap hatches these — the day is a full data hole). */
+  fullyMissingDays: number;
+  /** Sum of orphan prompts across `affectedDays`. */
   missingPrompts: number;
   /** Cost reconstructed from per-project prompt-to-cost rates, summed
-   * across all missing days. Rough — it assumes a missing day's mix of
+   * across all orphan prompts. Rough — it assumes a missing day's mix of
    * work matches the user's observed mix on intact days. */
   estimatedCost: number;
   /** Per-date detail so the heatmap can mark and label individual cells. */
@@ -230,12 +233,19 @@ export type MissingActivity = {
 };
 
 /**
- * Reconstruct a rough cost for days where `history.jsonl` has prompts but
- * the session JSONLs were swept by `cleanupPeriodDays`. We compute a
- * per-project cost-per-prompt rate from days that retain both signals,
- * then multiply that by the missing days' per-project prompt counts. A
- * project with too few sample points (or none at all) falls back to a
- * global rate.
+ * Reconstruct a rough cost for days where `history.jsonl` recorded
+ * prompts but their session JSONLs were swept by `cleanupPeriodDays`.
+ *
+ * "Missing" is decided per-prompt by sessionId — if a prompt's session
+ * has any entries in our scan (even on a different day), the session is
+ * intact and that prompt is *not* counted as lost. This avoids false
+ * positives when a session spans midnight (prompt logged at 23:55, API
+ * response at 00:05) or a `/resume` brings an old session forward.
+ *
+ * For the cost projection, we compute a per-project cost-per-prompt rate
+ * from days where both signals are intact, then scale each missing day's
+ * orphan prompts by the day's own project mix. A project with too few
+ * sample points falls back to a global rate.
  *
  * This is a best-effort estimate, not an accounting figure — the user's
  * prompt mix varies day to day, and rare expensive prompts can skew rates.
@@ -252,9 +262,13 @@ export function estimateMissingActivity(
 
   // (date, project) → cost from session entries.
   const costByDateProject = new Map<string, number>();
-  // (date) → total cost (used to decide if a day has any session data).
+  // (date) → total cost (used to compute per-day rates).
   const costByDate = new Map<string, number>();
+  // Every sessionId we have *any* entries for — a session anywhere in the
+  // entries log is considered intact for the purposes of orphan detection.
+  const knownSessions = new Set<string>();
   for (const e of entries) {
+    if (e.s) knownSessions.add(e.s);
     if (e.t < fromDay || e.t >= toDay + 86400000) continue;
     const date = dayKey(e.t);
     const c = costForEntry(e);
@@ -298,26 +312,43 @@ export function estimateMissingActivity(
     return globalRate;
   }
 
-  // Score missing days.
-  let missingDays = 0;
+  // Score missing days. A day's "orphan prompts" are the ones whose
+  // sessionId is *not* in `knownSessions` — those are the genuinely lost
+  // ones. We then scale the day's project mix by the orphan share to
+  // estimate cost.
+  let affectedDays = 0;
+  let fullyMissingDays = 0;
   let missingPrompts = 0;
   let estimatedCost = 0;
   const byDate = new Map<string, { prompts: number; estimatedCost: number }>();
   for (const pd of promptDays) {
     if (pd.ms < fromDay || pd.ms > toDay) continue;
     if (pd.count === 0) continue;
-    if (costByDate.has(pd.date)) continue;
+
+    let orphan = 0;
+    for (const [sessionId, count] of Object.entries(pd.bySession)) {
+      if (!knownSessions.has(sessionId)) orphan += count;
+    }
+    if (orphan === 0) continue;
+
+    // Distribute orphan prompts across the day's projects in the same
+    // proportion as the total prompts. (We don't track per-session →
+    // project mapping on the wire, but per session Claude Code only logs
+    // one cwd, so the day's project mix is a fair stand-in.)
+    const total = pd.count;
     let est = 0;
     for (const [project, count] of Object.entries(pd.byProject)) {
-      est += count * rateFor(project);
+      const orphanInProject = (count / total) * orphan;
+      est += orphanInProject * rateFor(project);
     }
-    missingDays++;
-    missingPrompts += pd.count;
+    affectedDays++;
+    if (!costByDate.has(pd.date)) fullyMissingDays++;
+    missingPrompts += orphan;
     estimatedCost += est;
-    byDate.set(pd.date, { prompts: pd.count, estimatedCost: est });
+    byDate.set(pd.date, { prompts: orphan, estimatedCost: est });
   }
 
-  return { missingDays, missingPrompts, estimatedCost, byDate };
+  return { affectedDays, fullyMissingDays, missingPrompts, estimatedCost, byDate };
 }
 
 /**

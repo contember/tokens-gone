@@ -42,6 +42,10 @@ export type PromptDay = {
   count: number;
   /** Per-project prompt counts. */
   byProject: Record<string, number>;
+  /** Per-session prompt counts. Used by `estimateMissingActivity` to skip
+   * prompts whose session still has entries elsewhere (typical when a
+   * session spans midnight). */
+  bySession: Record<string, number>;
 };
 
 export type ApiData = {

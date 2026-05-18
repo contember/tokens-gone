@@ -284,7 +284,7 @@ function Dashboard({
             <HeatmapModeToggle mode={heatmapMode} onChange={setHeatmapMode} />
           </div>
         </div>
-        {missingActivity.missingDays > 0 && (
+        {missingActivity.affectedDays > 0 && (
           <MissingDataNotice missing={missingActivity} mode={heatmapMode} />
         )}
         <ActivityHeatmap
@@ -351,27 +351,38 @@ function MissingDataNotice({
   missing,
   mode,
 }: {
-  missing: { missingDays: number; missingPrompts: number; estimatedCost: number };
+  missing: {
+    affectedDays: number;
+    fullyMissingDays: number;
+    missingPrompts: number;
+    estimatedCost: number;
+  };
   mode: HeatmapMode;
 }) {
+  const partial = missing.affectedDays - missing.fullyMissingDays;
+  const dayBreakdown =
+    partial > 0
+      ? `${missing.fullyMissingDays} fully wiped + ${partial} partial`
+      : `${missing.fullyMissingDays} fully wiped`;
   return (
     <div className="missing-notice" role="note">
       <span className="missing-notice-swatch" aria-hidden />
       <span>
-        <strong>{missing.missingDays}</strong> days are missing session data
-        (Claude Code's <code>cleanupPeriodDays</code> swept the JSONLs).
-        Prompts survived in <code>history.jsonl</code>, so we can{' '}
+        <strong>{missing.affectedDays}</strong> days have orphan prompts —
+        their session JSONLs were swept by Claude Code's{' '}
+        <code>cleanupPeriodDays</code> ({dayBreakdown}). Prompts survived
+        in <code>history.jsonl</code>, so we can{' '}
         {mode === 'cost' ? (
           <>
             estimate lost spend at{' '}
             <strong>~{fmtMoney(missing.estimatedCost)}</strong> across{' '}
-            {missing.missingPrompts.toLocaleString()} prompts — rough average
-            of cost-per-prompt on days with intact data.
+            {missing.missingPrompts.toLocaleString()} orphan prompts — rough
+            average of cost-per-prompt on days with intact data.
           </>
         ) : (
           <>
-            still chart them here. (Cost mode would mark these{' '}
-            {missing.missingDays} days as data holes;{' '}
+            still chart them here. (Cost mode hatches the{' '}
+            {missing.fullyMissingDays} fully-wiped days;{' '}
             <strong>~{fmtMoney(missing.estimatedCost)}</strong> est. lost
             spend.)
           </>

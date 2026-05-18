@@ -61,9 +61,11 @@ describe('loadPromptDays', () => {
     const [a, b] = days;
     expect(a!.count).toBe(2);
     expect(a!.byProject).toEqual({ foo: 1, bar: 1 });
+    expect(a!.bySession).toEqual({ s1: 1, s2: 1 });
 
     expect(b!.count).toBe(1);
     expect(b!.byProject).toEqual({ foo: 1 });
+    expect(b!.bySession).toEqual({ s3: 1 });
   });
 
   it('respects fromMs / toMs window', async () => {
