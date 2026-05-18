@@ -360,14 +360,24 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
   // startup. Without this carry-over the next scan would mirror that loss
   // and historical entries would silently drop out of the dashboard.
   const onDisk = new Set(files);
+  let preservedDeleted = 0;
   for (const [path, record] of Object.entries(cache.files)) {
     if (onDisk.has(path)) continue;
     newFiles[path] = record;
+    preservedDeleted++;
     for (const e of record.entries) allEntries.push(e);
   }
 
   if (useCache) {
-    await saveCache(cachePath, { version: CACHE_VERSION, files: newFiles });
+    // When nothing was parsed and the file set is unchanged, the in-memory
+    // cache mirrors what's on disk already — skip the (very expensive)
+    // 30MB+ JSON.stringify + write. When there *is* a change, kick the
+    // write off in the background so the API response doesn't block on
+    // disk I/O; `saveCache` updates the in-memory copy synchronously.
+    const fileSetChanged = files.length + preservedDeleted !== Object.keys(cache.files).length;
+    if (parsedLines > 0 || fileSetChanged) {
+      void saveCache(cachePath, { version: CACHE_VERSION, files: newFiles });
+    }
   }
 
   // Backfill firstPrompt for any session that wasn't found in Claude's

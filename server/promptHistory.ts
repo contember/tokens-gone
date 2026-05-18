@@ -12,6 +12,7 @@
  */
 
 import { createReadStream, existsSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { basename, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -60,9 +61,43 @@ export type LoadPromptDaysOptions = {
   path?: string;
 };
 
+/**
+ * Memoize the parsed `history.jsonl` keyed by (path, size, mtime, window).
+ * Re-parsing 7 MB+ of JSONL on every 5s refresh is the long tail of the
+ * scan latency budget; the file is append-only in practice so a size/mtime
+ * stat is a reliable invalidator.
+ */
+const promptCache = new Map<
+  string,
+  { size: number; mtimeMs: number; fromMs: number; toMs: number; days: PromptDay[] }
+>();
+
 export async function loadPromptDays(opts: LoadPromptDaysOptions = {}): Promise<PromptDay[]> {
   const path = opts.path ?? defaultHistoryPath();
   if (!existsSync(path)) return [];
+
+  const fromMs = opts.fromMs ?? -Infinity;
+  const toMs = opts.toMs ?? Infinity;
+
+  let st: { size: number; mtimeMs: number } | null = null;
+  try {
+    const s = await stat(path);
+    st = { size: s.size, mtimeMs: s.mtimeMs };
+  } catch {
+    st = null;
+  }
+  if (st) {
+    const cached = promptCache.get(path);
+    if (
+      cached &&
+      cached.size === st.size &&
+      cached.mtimeMs === st.mtimeMs &&
+      cached.fromMs === fromMs &&
+      cached.toMs === toMs
+    ) {
+      return cached.days;
+    }
+  }
 
   const byDay = new Map<number, PromptDay>();
   const stream = createReadStream(path, { encoding: 'utf-8' });
@@ -105,5 +140,7 @@ export async function loadPromptDays(opts: LoadPromptDaysOptions = {}): Promise<
     if (sessionId) day.bySession[sessionId] = (day.bySession[sessionId] ?? 0) + 1;
   }
 
-  return [...byDay.values()].sort((a, b) => a.ms - b.ms);
+  const days = [...byDay.values()].sort((a, b) => a.ms - b.ms);
+  if (st) promptCache.set(path, { size: st.size, mtimeMs: st.mtimeMs, fromMs, toMs, days });
+  return days;
 }

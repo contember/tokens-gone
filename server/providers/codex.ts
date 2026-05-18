@@ -299,7 +299,12 @@ async function scanCodex(options: ProviderScanOptions = {}): Promise<ProviderSca
   );
 
   if (useCache) {
-    await saveCache(cachePath, { version: CACHE_VERSION, files: newFiles });
+    // Same skip-when-clean + background-write strategy as the Claude
+    // provider — see its comment for the reasoning.
+    const fileSetChanged = files.length !== Object.keys(cache.files).length;
+    if (parsedLines > 0 || fileSetChanged) {
+      void saveCache(cachePath, { version: CACHE_VERSION, files: newFiles });
+    }
   }
 
   allEntries.sort((a, b) => a.t - b.t);

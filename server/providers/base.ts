@@ -73,26 +73,79 @@ export async function listJsonlFiles(root: string): Promise<string[]> {
   return out;
 }
 
+/**
+ * Memoized cache layer. Both `loadCache` and `saveCache` keep an
+ * in-process mirror keyed by `cachePath`, so repeated scans inside the
+ * same process don't pay the disk round-trip + JSON.parse / stringify
+ * cost on a 30MB+ file. The on-disk copy is still the source of truth
+ * across process restarts; the in-memory copy is what subsequent
+ * `loadCache` calls return until the process exits.
+ */
+const inMemoryCache = new Map<string, CacheFile<unknown>>();
+
 export async function loadCache<T>(
   cachePath: string,
   expectedVersion: number,
 ): Promise<CacheFile<T>> {
+  const cached = inMemoryCache.get(cachePath);
+  if (cached && cached.version === expectedVersion) {
+    return cached as CacheFile<T>;
+  }
   try {
     const raw = await readFile(cachePath, 'utf-8').catch(() => null);
-    if (raw == null) return { version: expectedVersion, files: {} };
+    if (raw == null) {
+      const empty: CacheFile<T> = { version: expectedVersion, files: {} };
+      inMemoryCache.set(cachePath, empty);
+      return empty;
+    }
     const data = JSON.parse(raw) as CacheFile<T>;
     if (data?.version !== expectedVersion) {
-      return { version: expectedVersion, files: {} };
+      const empty: CacheFile<T> = { version: expectedVersion, files: {} };
+      inMemoryCache.set(cachePath, empty);
+      return empty;
     }
+    inMemoryCache.set(cachePath, data);
     return data;
   } catch {
-    return { version: expectedVersion, files: {} };
+    const empty: CacheFile<T> = { version: expectedVersion, files: {} };
+    inMemoryCache.set(cachePath, empty);
+    return empty;
   }
 }
 
+/**
+ * Track the latest in-flight write per cachePath so concurrent saves
+ * serialize cleanly instead of racing each other (two writers
+ * stringifying and overlapping their writes corrupt the file).
+ */
+const pendingWrites = new Map<string, Promise<void>>();
+
+/**
+ * Update both layers of the cache. The in-memory copy is set
+ * synchronously so the very next `loadCache` reflects the change; the
+ * disk write is chained onto any in-flight write for the same path so
+ * we never overlap two writers on the same file. The returned promise
+ * resolves only once *this* save has hit disk — but callers who care
+ * about response latency more than write durability can run it in the
+ * background via `void saveCache(...)` and rely on the in-memory
+ * mirror until next time.
+ */
 export async function saveCache<T>(cachePath: string, cache: CacheFile<T>): Promise<void> {
-  await mkdir(dirname(cachePath), { recursive: true });
-  await writeFile(cachePath, JSON.stringify(cache));
+  inMemoryCache.set(cachePath, cache as CacheFile<unknown>);
+  const prev = pendingWrites.get(cachePath) ?? Promise.resolve();
+  const next = prev
+    .catch(() => undefined)
+    .then(async () => {
+      await mkdir(dirname(cachePath), { recursive: true });
+      await writeFile(cachePath, JSON.stringify(cache));
+    });
+  pendingWrites.set(cachePath, next);
+  // Clean up the map once this write is done so the Map doesn't pin
+  // outdated promises forever.
+  next.finally(() => {
+    if (pendingWrites.get(cachePath) === next) pendingWrites.delete(cachePath);
+  });
+  await next;
 }
 
 export type FileInfo = { path: string; size: number; mtimeMs: number };
