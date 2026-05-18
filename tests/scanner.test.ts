@@ -229,6 +229,50 @@ describe('scanner', () => {
     await rm(subDir, { recursive: true });
   });
 
+  it('preserves cached entries when source jsonl is deleted from disk', async () => {
+    // Simulates Claude Code's cleanupPeriodDays sweep wiping a session file
+    // that we already have in cache. The entries must survive the next scan.
+    const ephDir = join(projects, '-home-user-projects-ephemeral');
+    await mkdir(ephDir, { recursive: true });
+    const ephFile = join(ephDir, 'will-be-deleted.jsonl');
+    await writeFile(
+      ephFile,
+      makeLine({
+        timestamp: '2026-03-20T10:00:00Z',
+        sessionId: 'sess-DELETED',
+        message: {
+          id: 'msg-D',
+          model: 'claude-opus-4-7',
+          usage: {
+            input_tokens: 111,
+            output_tokens: 222,
+            cache_creation_input_tokens: 333,
+            cache_read_input_tokens: 444,
+          },
+        },
+      }),
+    );
+
+    const first = await scan({ dataDir: projects, cachePath: cache });
+    const beforeDelete = first.entries.filter((e) => e.s === 'sess-DELETED');
+    expect(beforeDelete.length).toBe(1);
+
+    await rm(ephDir, { recursive: true });
+
+    const second = await scan({ dataDir: projects, cachePath: cache });
+    const afterDelete = second.entries.filter((e) => e.s === 'sess-DELETED');
+    expect(afterDelete.length).toBe(1);
+    expect(afterDelete[0]!.i).toBe(111);
+    expect(afterDelete[0]!.o).toBe(222);
+    expect(afterDelete[0]!.cc).toBe(333);
+    expect(afterDelete[0]!.cr).toBe(444);
+
+    // And the survival must be persistent across cache reload — a third scan
+    // (cold-loading cache from disk again) should still have it.
+    const third = await scan({ dataDir: projects, cachePath: cache });
+    expect(third.entries.filter((e) => e.s === 'sess-DELETED').length).toBe(1);
+  });
+
   it('skips entries with synthetic model', async () => {
     const synthDir = join(projects, '-home-user-projects-synth');
     await mkdir(synthDir, { recursive: true });

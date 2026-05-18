@@ -356,6 +356,16 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
     },
   );
 
+  // Claude Code's `cleanupPeriodDays` (default 30) deletes session JSONLs at
+  // startup. Without this carry-over the next scan would mirror that loss
+  // and historical entries would silently drop out of the dashboard.
+  const onDisk = new Set(files);
+  for (const [path, record] of Object.entries(cache.files)) {
+    if (onDisk.has(path)) continue;
+    newFiles[path] = record;
+    for (const e of record.entries) allEntries.push(e);
+  }
+
   if (useCache) {
     await saveCache(cachePath, { version: CACHE_VERSION, files: newFiles });
   }
