@@ -32,11 +32,14 @@ const EMPTY_FILTERS: Filters = {
   harnesses: new Set(),
 };
 
+const LIVE_REFRESH_INTERVAL_MS = 5000;
+
 export function App() {
   const [data, setData] = useState<ApiData | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [refreshing, setRefreshing] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(false);
 
   useEffect(() => {
     fetch('/api/data')
@@ -58,6 +61,29 @@ export function App() {
     }
   }
 
+  // Auto-refresh tick. The interval starts immediately when toggled on,
+  // and `refresh` already guards against overlapping calls via local
+  // state — but we still skip ticks while one is in flight so a slow
+  // scan doesn't queue up.
+  useEffect(() => {
+    if (!autoRefresh) return;
+    let cancelled = false;
+    let inFlight = false;
+    const id = setInterval(async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        await refresh();
+      } finally {
+        if (!cancelled) inFlight = false;
+      }
+    }, LIVE_REFRESH_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [autoRefresh]);
+
   if (err) return <div className="app"><div className="error">{err}</div></div>;
   if (!data)
     return (
@@ -73,6 +99,8 @@ export function App() {
       setFilters={setFilters}
       onRefresh={refresh}
       refreshing={refreshing}
+      autoRefresh={autoRefresh}
+      onToggleAutoRefresh={() => setAutoRefresh((v) => !v)}
     />
   );
 }
@@ -83,12 +111,16 @@ function Dashboard({
   setFilters,
   onRefresh,
   refreshing,
+  autoRefresh,
+  onToggleAutoRefresh,
 }: {
   data: ApiData;
   filters: Filters;
   setFilters: (f: Filters) => void;
   onRefresh: () => void;
   refreshing: boolean;
+  autoRefresh: boolean;
+  onToggleAutoRefresh: () => void;
 }) {
   const filtered = useMemo<Entry[]>(
     () => applyFilters(data.entries, filters),
@@ -263,6 +295,18 @@ function Dashboard({
             {data.entries.length.toLocaleString()} entries · {data.stats.files} files · {data.stats.tookMs}ms
           </span>
           <button
+            className={`live-toggle${autoRefresh ? ' active' : ''}`}
+            onClick={onToggleAutoRefresh}
+            title={
+              autoRefresh
+                ? 'Disable 5s auto-refresh'
+                : 'Auto-refresh every 5s and extrapolate spend between ticks'
+            }
+          >
+            <span className="live-dot" aria-hidden />
+            {autoRefresh ? 'Live' : 'Go live'}
+          </button>
+          <button
             className={`refresh${refreshing ? ' spinning' : ''}`}
             onClick={onRefresh}
             disabled={refreshing}
@@ -274,7 +318,7 @@ function Dashboard({
 
       <ActiveFilters filters={filters} setFilters={setFilters} entries={data.entries} />
 
-      <Hero totals={t} costByType={costByType} contextLine={contextLine} />
+      <Hero totals={t} costByType={costByType} contextLine={contextLine} live={autoRefresh} />
 
       <div className="section">
         <div className="section-head">

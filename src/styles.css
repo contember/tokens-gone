@@ -463,6 +463,73 @@ a:hover {
   }
 }
 
+.app-head .right button.live-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  padding: 4px 8px;
+  border-radius: var(--r-1);
+  font-size: 11px;
+  color: var(--t-3);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.app-head .right button.live-toggle:hover {
+  color: var(--t-1);
+  border-color: var(--line-strong);
+}
+
+.app-head .right button.live-toggle.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.live-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--t-3);
+  box-shadow: 0 0 0 0 transparent;
+}
+
+.live-toggle.active .live-dot,
+.hero-live-tag .live-dot {
+  background: var(--accent);
+  animation: live-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--accent);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 0 5px transparent;
+    opacity: 0.55;
+  }
+}
+
+.hero-live-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: var(--s-3);
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── active filters breadcrumb ─────────────────────────── */
 
 .crumbs {
