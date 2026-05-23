@@ -24,7 +24,7 @@ import { readdir, stat, readFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { join, sep } from 'node:path';
+import { basename, join, sep } from 'node:path';
 import { homedir } from 'node:os';
 import type { Entry, SessionMeta } from '../types.ts';
 import type {
@@ -51,6 +51,14 @@ type ClaudeExtra = {
   sessionId?: string;
   /** First user prompt — fallback label when no summary exists yet. */
   firstPrompt?: string;
+  /**
+   * Real cwd extracted from the JSONL itself. The encoded project dir name
+   * (`-Users-foo-bar-tokens-gone`) is lossy — Claude Code replaces both `/`
+   * and `-` with `-`, so you can't tell `tokens-gone` from `tokens/gone`
+   * apart from the dir alone. Storing the cwd lets us name projects
+   * correctly without re-parsing.
+   */
+  cwd?: string;
 };
 
 function defaultDataDir(): string {
@@ -64,18 +72,28 @@ function defaultCachePath(): string {
 }
 
 /**
- * Project name = last segment of the encoded cwd dir, which is always the
- * first directory under `projectsDir`. Subagent JSONLs live under deeper
- * subdirs of that project dir, so we walk back to the project root.
+ * Encoded project dir = first directory under `projectsDir`. Subagent JSONLs
+ * live under deeper subdirs of that project dir, so we walk back to the
+ * project root.
  */
-function projectNameForFile(filePath: string, projectsDir: string): string {
+function projectDirForFile(filePath: string, projectsDir: string): string {
   const rel = filePath.startsWith(projectsDir + sep)
     ? filePath.slice(projectsDir.length + 1)
     : filePath;
-  const top = rel.split(sep)[0] ?? '';
-  if (!top.startsWith('-')) return top || 'unknown';
-  const parts = top.slice(1).split('-');
-  return parts[parts.length - 1] || top;
+  return rel.split(sep)[0] ?? '';
+}
+
+/**
+ * Fallback project name when no `cwd` is available in the JSONL. Claude
+ * Code encodes the cwd by replacing both `/` and `-` with `-`, so the
+ * encoded dir is lossy — taking the last segment is a guess that loses
+ * everything before the final `-` (e.g. `tokens-gone` → `gone`). Only use
+ * this when nothing in the file has surfaced a real cwd yet.
+ */
+function fallbackProjectName(encodedDir: string): string {
+  if (!encodedDir.startsWith('-')) return encodedDir || 'unknown';
+  const parts = encodedDir.slice(1).split('-');
+  return parts[parts.length - 1] || encodedDir;
 }
 
 /**
@@ -120,6 +138,38 @@ async function loadSessionMeta(projectsDir: string): Promise<Record<string, Sess
 }
 
 /**
+ * Cheap one-shot cwd read. Used to backfill cwd into cached records whose
+ * file isn't being re-parsed this scan — without it, caches written before
+ * the cwd field existed would never get a real project name. We stop as
+ * soon as we see one cwd, which is usually within the first few lines.
+ */
+async function peekCwd(path: string): Promise<string | undefined> {
+  let stream: ReturnType<typeof createReadStream> | undefined;
+  let rl: ReturnType<typeof createInterface> | undefined;
+  try {
+    stream = createReadStream(path, { encoding: 'utf-8' });
+    rl = createInterface({ input: stream, crlfDelay: Infinity });
+    for await (const line of rl) {
+      if (line.indexOf('"cwd"') === -1) continue;
+      try {
+        const json = JSON.parse(line);
+        if (typeof json.cwd === 'string' && json.cwd) return json.cwd;
+      } catch {
+        // Malformed line — keep looking.
+      }
+    }
+  } catch {
+    // File may have been deleted between scans (Claude Code's cleanup
+    // sweep), unreadable, or otherwise broken — skip and let the caller
+    // try the next file in the dir.
+  } finally {
+    rl?.close();
+    stream?.destroy();
+  }
+  return undefined;
+}
+
+/**
  * Streaming JSONL parser. Returns extracted entries plus a line count.
  *
  * Streams via readline so we never hold the whole file in memory (some
@@ -130,11 +180,18 @@ async function parseFile(
   path: string,
   projectName: string,
   fromOffset: number,
-): Promise<{ entries: Entry[]; lines: number; sessionId?: string; firstPrompt?: string }> {
+): Promise<{
+  entries: Entry[];
+  lines: number;
+  sessionId?: string;
+  firstPrompt?: string;
+  cwd?: string;
+}> {
   let lines = 0;
   const entries: Entry[] = [];
   let sessionId: string | undefined;
   let firstPrompt: string | undefined;
+  let cwd: string | undefined;
   const stream = createReadStream(path, { encoding: 'utf-8', start: fromOffset });
   const rl = createInterface({ input: stream, crlfDelay: Infinity });
   for await (const line of rl) {
@@ -142,14 +199,16 @@ async function parseFile(
     if (line.length < 50) continue;
 
     // Cheap pre-filter: only JSON.parse lines that look like usage logs OR
-    // potential first-user-prompt lines. Avoids parsing every line of the
-    // ~50MB session files just to extract one prompt.
+    // potential first-user-prompt lines OR the first line carrying cwd.
+    // Avoids parsing every line of the ~50MB session files just to extract
+    // one prompt.
     const hasUsage = line.indexOf('"usage"') !== -1;
     const maybePrompt =
       !firstPrompt &&
       line.indexOf('"type":"user"') !== -1 &&
       line.indexOf('"isMeta":true') === -1;
-    if (!hasUsage && !maybePrompt) continue;
+    const maybeCwd = !cwd && line.indexOf('"cwd"') !== -1;
+    if (!hasUsage && !maybePrompt && !maybeCwd) continue;
 
     let json: any;
     try {
@@ -159,6 +218,7 @@ async function parseFile(
     }
 
     if (!sessionId && typeof json.sessionId === 'string') sessionId = json.sessionId;
+    if (!cwd && typeof json.cwd === 'string' && json.cwd) cwd = json.cwd;
 
     if (!firstPrompt && json.type === 'user' && !json.isMeta && !json.isSidechain) {
       const text = extractUserText(json?.message?.content);
@@ -193,7 +253,7 @@ async function parseFile(
       // JSON payload) smaller for the common case.
     });
   }
-  return { entries, lines, sessionId, firstPrompt };
+  return { entries, lines, sessionId, firstPrompt, cwd };
 }
 
 /**
@@ -311,19 +371,21 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
     concurrency,
     async (info) => {
       const state = decideFileState<ClaudeExtra>(info, cache.files[info.path]);
-      const projectName = projectNameForFile(info.path, projectsDir);
 
       if (state.kind === 'unchanged') {
         newFiles[info.path] = state.cached;
         cachedFiles++;
-        for (const e of state.cached.entries) allEntries.push(e);
         return;
       }
+
+      // parseFile pre-stamps every entry's `p` with this value; we overwrite
+      // it below once cwd is known, so any string works here.
+      const placeholderName = '';
 
       if (state.kind === 'appended') {
         // The new tail can complete a streaming response whose earlier chunks
         // are already cached, so we merge then dedup-by-hash again.
-        const parsed = await parseFile(info.path, projectName, state.fromOffset);
+        const parsed = await parseFile(info.path, placeholderName, state.fromOffset);
         parsedLines += parsed.lines;
         const merged = dedupByHash([...state.cached.entries, ...parsed.entries]);
         const record: FileCacheRecord<ClaudeExtra> = {
@@ -333,14 +395,14 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
           entries: merged,
           sessionId: state.cached.sessionId ?? parsed.sessionId,
           firstPrompt: state.cached.firstPrompt ?? parsed.firstPrompt,
+          cwd: state.cached.cwd ?? parsed.cwd,
         };
         newFiles[info.path] = record;
-        for (const e of merged) allEntries.push(e);
         return;
       }
 
       // Cold or invalidated — parse the whole file and dedup intra-file.
-      const parsed = await parseFile(info.path, projectName, 0);
+      const parsed = await parseFile(info.path, placeholderName, 0);
       parsedLines += parsed.lines;
       const deduped = dedupByHash(parsed.entries);
       const record: FileCacheRecord<ClaudeExtra> = {
@@ -350,9 +412,9 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
         entries: deduped,
         sessionId: parsed.sessionId,
         firstPrompt: parsed.firstPrompt,
+        cwd: parsed.cwd,
       };
       newFiles[info.path] = record;
-      for (const e of deduped) allEntries.push(e);
     },
   );
 
@@ -365,7 +427,67 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
     if (onDisk.has(path)) continue;
     newFiles[path] = record;
     preservedDeleted++;
-    for (const e of record.entries) allEntries.push(e);
+  }
+
+  // Resolve the real project name per encoded dir by pooling cwds across all
+  // sibling files. One file with a cwd record is enough to name the whole
+  // dir, so files that never wrote a cwd line (or pre-fix cached records)
+  // still get the right label. Falls back to the lossy `-` heuristic only
+  // when no file in the dir has surfaced a cwd.
+  const dirCwds = new Map<string, string>();
+  const dirFiles = new Map<string, string[]>();
+  for (const [path, rec] of Object.entries(newFiles)) {
+    const dir = projectDirForFile(path, projectsDir);
+    let bucket = dirFiles.get(dir);
+    if (!bucket) {
+      bucket = [];
+      dirFiles.set(dir, bucket);
+    }
+    bucket.push(path);
+    if (rec.cwd && !dirCwds.has(dir)) dirCwds.set(dir, rec.cwd);
+  }
+
+  // Backfill cwd for dirs whose records were all written before the cwd
+  // field existed in the cache. One peek per unresolved dir (not per file)
+  // — cheap, and persisting cwd onto the records means it's a one-shot cost.
+  let backfilledDirs = 0;
+  const unresolvedDirs: string[] = [];
+  for (const dir of dirFiles.keys()) {
+    if (!dirCwds.has(dir)) unresolvedDirs.push(dir);
+  }
+  await pMap(unresolvedDirs, concurrency, async (dir) => {
+    const paths = dirFiles.get(dir) ?? [];
+    for (const file of paths) {
+      const cwd = await peekCwd(file);
+      if (!cwd) continue;
+      dirCwds.set(dir, cwd);
+      const rec = newFiles[file];
+      if (rec) rec.cwd = cwd;
+      backfilledDirs++;
+      return;
+    }
+  });
+
+  const dirNames = new Map<string, string>();
+  function projectNameFor(path: string): string {
+    const dir = projectDirForFile(path, projectsDir);
+    let name = dirNames.get(dir);
+    if (name !== undefined) return name;
+    const cwd = dirCwds.get(dir);
+    name = cwd ? basename(cwd) : fallbackProjectName(dir);
+    dirNames.set(dir, name);
+    return name;
+  }
+
+  // Now collect entries with the resolved project name. Re-stamp `.p` on
+  // every entry — cached records may carry the old (truncated) value from
+  // before this fix, and freshly parsed entries got a placeholder.
+  for (const [path, record] of Object.entries(newFiles)) {
+    const projectName = projectNameFor(path);
+    for (const e of record.entries) {
+      e.p = projectName;
+      allEntries.push(e);
+    }
   }
 
   if (useCache) {
@@ -375,7 +497,7 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
     // write off in the background so the API response doesn't block on
     // disk I/O; `saveCache` updates the in-memory copy synchronously.
     const fileSetChanged = files.length + preservedDeleted !== Object.keys(cache.files).length;
-    if (parsedLines > 0 || fileSetChanged) {
+    if (parsedLines > 0 || fileSetChanged || backfilledDirs > 0) {
       void saveCache(cachePath, { version: CACHE_VERSION, files: newFiles });
     }
   }

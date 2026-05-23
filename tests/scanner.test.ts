@@ -18,7 +18,7 @@ function makeLine(over: Record<string, unknown> = {}): string {
     timestamp: '2026-04-15T10:00:00Z',
     sessionId: 'sess-A',
     requestId: `req-${n}`,
-    cwd: '/x',
+    cwd: '/home/user/projects/foo',
     message: {
       id: `msg-${n}`,
       model: 'claude-sonnet-4-6',
@@ -40,7 +40,7 @@ function makeLineFixed(msgId: string, reqId: string, over: Record<string, unknow
     timestamp: '2026-04-15T10:00:00Z',
     sessionId: 'sess-A',
     requestId: reqId,
-    cwd: '/x',
+    cwd: '/home/user/projects/foo',
     message: {
       id: msgId,
       model: 'claude-sonnet-4-6',
@@ -76,7 +76,11 @@ beforeAll(async () => {
   await writeFile(
     join(projects, '-home-user-projects-bar', 'sess2.jsonl'),
     [
-      makeLine({ timestamp: '2026-04-16T10:00:00Z', sessionId: 'sess-B' }),
+      makeLine({
+        timestamp: '2026-04-16T10:00:00Z',
+        sessionId: 'sess-B',
+        cwd: '/home/user/projects/bar',
+      }),
     ].join('\n'),
   );
 });
@@ -271,6 +275,28 @@ describe('scanner', () => {
     // (cold-loading cache from disk again) should still have it.
     const third = await scan({ dataDir: projects, cachePath: cache });
     expect(third.entries.filter((e) => e.s === 'sess-DELETED').length).toBe(1);
+  });
+
+  it('names projects from cwd, not the lossy encoded dir', async () => {
+    // Claude Code encodes the cwd by replacing both `/` and `-` with `-`,
+    // so the encoded dir `-home-user-projects-tokens-gone` can't be split
+    // back into "tokens-gone" from the dir alone. The cwd recorded in the
+    // JSONL itself is the source of truth.
+    const hyphenDir = join(projects, '-home-user-projects-tokens-gone');
+    await mkdir(hyphenDir, { recursive: true });
+    await writeFile(
+      join(hyphenDir, 'sess.jsonl'),
+      makeLine({
+        sessionId: 'sess-HYPHEN',
+        cwd: '/home/user/projects/tokens-gone',
+      }),
+    );
+
+    const r = await scan({ dataDir: projects, cachePath: cache });
+    const hit = r.entries.find((e) => e.s === 'sess-HYPHEN');
+    expect(hit?.p).toBe('tokens-gone');
+
+    await rm(hyphenDir, { recursive: true });
   });
 
   it('skips entries with synthetic model', async () => {
