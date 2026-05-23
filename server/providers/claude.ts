@@ -20,7 +20,7 @@
  * message extracted from the JSONL itself.
  */
 
-import { readdir, stat, readFile } from 'node:fs/promises';
+import { readdir, stat, readFile, open } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
@@ -143,13 +143,28 @@ async function loadSessionMeta(projectsDir: string): Promise<Record<string, Sess
  * the cwd field existed would never get a real project name. We stop as
  * soon as we see one cwd, which is usually within the first few lines.
  */
+/**
+ * Read just enough of the head of the file to find a cwd record. Session
+ * logs start with system/user/assistant records that all carry cwd, so
+ * the first one is essentially always within the first few KB. 64KB is
+ * conservative and saves us from streaming 50MB files just to peek one
+ * field. Plain fd reads (no stream pipeline) keep async error semantics
+ * trivially correct under bun's strict unhandled-error detection.
+ */
+const PEEK_BYTES = 64 * 1024;
+
 async function peekCwd(path: string): Promise<string | undefined> {
-  let stream: ReturnType<typeof createReadStream> | undefined;
-  let rl: ReturnType<typeof createInterface> | undefined;
+  let fh: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    stream = createReadStream(path, { encoding: 'utf-8' });
-    rl = createInterface({ input: stream, crlfDelay: Infinity });
-    for await (const line of rl) {
+    fh = await open(path, 'r');
+    const buf = Buffer.alloc(PEEK_BYTES);
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+    if (bytesRead === 0) return undefined;
+    const text = buf.toString('utf-8', 0, bytesRead);
+    // Drop the trailing partial line so JSON.parse doesn't choke on it.
+    const lastNl = text.lastIndexOf('\n');
+    const usable = lastNl === -1 ? text : text.slice(0, lastNl);
+    for (const line of usable.split('\n')) {
       if (line.indexOf('"cwd"') === -1) continue;
       try {
         const json = JSON.parse(line);
@@ -163,8 +178,7 @@ async function peekCwd(path: string): Promise<string | undefined> {
     // sweep), unreadable, or otherwise broken — skip and let the caller
     // try the next file in the dir.
   } finally {
-    rl?.close();
-    stream?.destroy();
+    await fh?.close().catch(() => undefined);
   }
   return undefined;
 }
