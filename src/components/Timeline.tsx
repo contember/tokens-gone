@@ -60,20 +60,38 @@ export function Timeline({ entries, rangeFrom, rangeTo }: { entries: Entry[]; ra
       b.byModel.set(cls, (b.byModel.get(cls) ?? 0) + costForEntry(e));
     }
 
-    const points = [...buckets.values()]
-      .sort((a, b) => a.sort - b.sort)
-      .map<ChartPoint>((b) => {
-        let total = 0;
-        const segments: ChartPoint['segments'] = [];
-        for (const k of ['opus', 'sonnet', 'haiku', 'other'] as const) {
-          const v = b.byModel.get(k);
-          if (v != null && v > 0) {
-            segments.push({ value: v, color: MODEL_COLOR[k]!, label: labelForFamily(k) });
-            total += v;
-          }
+    const toPoint = (b: { full: string; label: string; byModel: Map<string, number> }): ChartPoint => {
+      let total = 0;
+      const segments: ChartPoint['segments'] = [];
+      for (const k of ['opus', 'sonnet', 'haiku', 'other'] as const) {
+        const v = b.byModel.get(k);
+        if (v != null && v > 0) {
+          segments.push({ value: v, color: MODEL_COLOR[k]!, label: labelForFamily(k) });
+          total += v;
         }
-        return { label: b.label, full: b.full, value: total, segments };
-      });
+      }
+      return { label: b.label, full: b.full, value: total, segments };
+    };
+
+    // Densify: walk every bucket from the first active one to the last,
+    // emitting a zero-value point for spans with no activity. Without this,
+    // idle days/weeks/etc. collapse and adjacent active buckets sit side by
+    // side, hiding the gap. We step in local time (Date arithmetic) so DST
+    // and uneven month lengths stay correct.
+    const firstStart = bucketStartMs(entries[0]!.t, gran);
+    const lastStart = bucketStartMs(entries[entries.length - 1]!.t, gran);
+    const points: ChartPoint[] = [];
+    const cur = new Date(firstStart);
+    for (let guard = 0; cur.getTime() <= lastStart && guard < 200000; guard++) {
+      const ms = cur.getTime();
+      const b = buckets.get(bucketKey(ms, gran));
+      if (b) points.push(toPoint(b));
+      else {
+        const meta = bucketize(ms, gran);
+        points.push({ label: meta.label, full: meta.full, value: 0, segments: [] });
+      }
+      stepBucket(cur, gran);
+    }
 
     return { points, total: points.reduce((s, p) => s + p.value, 0) };
   }, [entries, gran]);
@@ -133,6 +151,25 @@ function bucketKey(t: number, gran: Granularity): string {
   if (gran === 'day') return dayKey(t);
   if (gran === 'week') return String(weekBucket(t));
   return monthKey(t);
+}
+
+/** Local-time start of the bucket containing `t`, in ms. Used to seed and
+ * walk the densification loop. */
+function bucketStartMs(t: number, gran: Granularity): number {
+  if (gran === 'hour') return hourBucket(t);
+  if (gran === 'week') return weekBucket(t);
+  const d = new Date(t);
+  d.setHours(0, 0, 0, 0);
+  if (gran === 'month') d.setDate(1);
+  return d.getTime();
+}
+
+/** Advance a Date in place to the start of the next bucket. */
+function stepBucket(d: Date, gran: Granularity): void {
+  if (gran === 'hour') d.setHours(d.getHours() + 1);
+  else if (gran === 'day') d.setDate(d.getDate() + 1);
+  else if (gran === 'week') d.setDate(d.getDate() + 7);
+  else d.setMonth(d.getMonth() + 1);
 }
 
 function bucketize(t: number, gran: Granularity): { key: string; label: string; full: string; sort: number } {
