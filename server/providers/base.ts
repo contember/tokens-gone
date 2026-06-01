@@ -148,6 +148,17 @@ export async function saveCache<T>(cachePath: string, cache: CacheFile<T>): Prom
   await next;
 }
 
+/**
+ * Await every in-flight background `saveCache` write. Callers that fire
+ * writes via `void saveCache(...)` (to avoid blocking response latency)
+ * use this to drain them before tearing down — e.g. tests removing their
+ * temp dir, or a graceful shutdown — so a write doesn't land after the
+ * directory is gone (ENOENT) and surface as an unhandled rejection.
+ */
+export async function flushCacheWrites(): Promise<void> {
+  await Promise.allSettled([...pendingWrites.values()]);
+}
+
 export type FileInfo = { path: string; size: number; mtimeMs: number };
 
 export type FileState<T> =

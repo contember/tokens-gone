@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, writeFile, appendFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { _scanCodex as scanCodex } from '../server/providers/codex';
+import { flushCacheWrites } from '../server/providers/base';
 
 let dir: string;
 let dataDir: string;
@@ -111,6 +112,10 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // scanCodex fires its cache write in the background (`void saveCache`);
+  // drain it before removing the temp dir or the write lands after the dir
+  // is gone and surfaces as an unhandled ENOENT between tests.
+  await flushCacheWrites();
   await rm(dir, { recursive: true, force: true });
 });
 
