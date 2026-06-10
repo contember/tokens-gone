@@ -36,6 +36,7 @@
   --accent-line: rgba(224, 120, 86, 0.4);
 
   /* ── model hues (only used in stacked charts/bars) ────── */
+  --fable: #b08fc7;
   --opus: #d4a574;
   --sonnet: #c87f5a;
   --haiku: #94a172;
@@ -108,6 +109,7 @@
   --accent-soft: rgba(199, 83, 51, 0.12);
   --accent-line: rgba(199, 83, 51, 0.5);
 
+  --fable: #8a5fa0;
   --opus: #b07a3e;
   --sonnet: #a8512e;
   --haiku: #6e8348;
@@ -737,6 +739,7 @@ a:hover {
 .decomp .seg.output { background: var(--tok-output); }
 .decomp .seg.cwrite { background: var(--tok-cwrite); }
 .decomp .seg.cread { background: var(--tok-cread); }
+.decomp .seg.fable { background: var(--fable); }
 .decomp .seg.opus { background: var(--opus); }
 .decomp .seg.sonnet { background: var(--sonnet); }
 .decomp .seg.haiku { background: var(--haiku); }
@@ -1008,6 +1011,12 @@ td.cell-decomp {
   border: 1px solid transparent;
   background: var(--ink-2);
   color: var(--t-2);
+}
+
+.tag.fable {
+  background: rgba(176, 143, 199, 0.08);
+  color: var(--fable);
+  border-color: rgba(176, 143, 199, 0.2);
 }
 
 .tag.opus {

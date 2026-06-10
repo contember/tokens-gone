@@ -8,6 +8,7 @@ import { fmtMoney, modelClass, modelShort } from '../format';
 type Granularity = 'hour' | 'day' | 'week' | 'month';
 
 const MODEL_COLOR: Record<string, string> = {
+  fable: 'var(--fable)',
   opus: 'var(--opus)',
   sonnet: 'var(--sonnet)',
   haiku: 'var(--haiku)',
@@ -17,7 +18,7 @@ const MODEL_COLOR: Record<string, string> = {
 /**
  * Cost-over-time chart with granularity switcher. Picks a sensible default
  * based on the visible range: narrow ranges default to hourly, wide ones
- * to monthly. Stacking is by model family (opus/sonnet/haiku/other).
+ * to monthly. Stacking is by model family (fable/opus/sonnet/haiku/other).
  */
 export function Timeline({ entries, rangeFrom, rangeTo }: { entries: Entry[]; rangeFrom: number | null; rangeTo: number | null }) {
   const defaultGran = useMemo<Granularity>(() => {
@@ -63,7 +64,7 @@ export function Timeline({ entries, rangeFrom, rangeTo }: { entries: Entry[]; ra
     const toPoint = (b: { full: string; label: string; byModel: Map<string, number> }): ChartPoint => {
       let total = 0;
       const segments: ChartPoint['segments'] = [];
-      for (const k of ['opus', 'sonnet', 'haiku', 'other'] as const) {
+      for (const k of ['fable', 'opus', 'sonnet', 'haiku', 'other'] as const) {
         const v = b.byModel.get(k);
         if (v != null && v > 0) {
           segments.push({ value: v, color: MODEL_COLOR[k]!, label: labelForFamily(k) });
@@ -117,6 +118,7 @@ export function Timeline({ entries, rangeFrom, rangeTo }: { entries: Entry[]; ra
       </div>
       <BarChart data={points} height={220} />
       <div style={{ display: 'flex', gap: 16, marginTop: 12, fontSize: 11, color: 'var(--t-3)' }}>
+        <Legend cls="fable" />
         <Legend cls="opus" />
         <Legend cls="sonnet" />
         <Legend cls="haiku" />
@@ -125,7 +127,7 @@ export function Timeline({ entries, rangeFrom, rangeTo }: { entries: Entry[]; ra
   );
 }
 
-function Legend({ cls }: { cls: 'opus' | 'sonnet' | 'haiku' }) {
+function Legend({ cls }: { cls: 'fable' | 'opus' | 'sonnet' | 'haiku' }) {
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
       <span style={{ width: 8, height: 8, borderRadius: 1, background: `var(--${cls})` }} />

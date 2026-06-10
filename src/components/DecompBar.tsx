@@ -10,7 +10,7 @@
  */
 
 export type Segment = {
-  cls: 'input' | 'output' | 'cwrite' | 'cread' | 'opus' | 'sonnet' | 'haiku' | 'other';
+  cls: 'input' | 'output' | 'cwrite' | 'cread' | 'fable' | 'opus' | 'sonnet' | 'haiku' | 'other';
   value: number;
   label?: string;
 };
@@ -42,6 +42,7 @@ export function DecompBar({
 
 export function modelSegment(model: string): Segment['cls'] {
   const m = model.toLowerCase();
+  if (m.includes('fable') || m.includes('mythos')) return 'fable';
   if (m.includes('opus')) return 'opus';
   if (m.includes('sonnet')) return 'sonnet';
   if (m.includes('haiku')) return 'haiku';

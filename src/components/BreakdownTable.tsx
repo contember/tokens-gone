@@ -169,7 +169,7 @@ function computeSegments(r: Row, decomposeBy: 'type' | 'model'): Segment[] {
     const cls = modelSegment(e.m);
     byFam.set(cls, (byFam.get(cls) ?? 0) + costForEntry(e));
   }
-  const order: Segment['cls'][] = ['opus', 'sonnet', 'haiku', 'other'];
+  const order: Segment['cls'][] = ['fable', 'opus', 'sonnet', 'haiku', 'other'];
   const out: Segment[] = [];
   for (const k of order) {
     const v = byFam.get(k);

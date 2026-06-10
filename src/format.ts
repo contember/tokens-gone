@@ -31,6 +31,7 @@ export function fmtRelativeDay(t: number, now = Date.now()): string {
 
 export function modelClass(model: string): string {
   const m = model.toLowerCase();
+  if (m.includes('fable') || m.includes('mythos')) return 'fable';
   if (m.includes('opus')) return 'opus';
   if (m.includes('haiku')) return 'haiku';
   if (m.includes('sonnet')) return 'sonnet';
