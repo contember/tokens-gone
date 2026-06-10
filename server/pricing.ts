@@ -8,6 +8,9 @@
  * (gpt-5.2-codex in particular) cost more than base gpt-5.
  *
  * Notable gotchas:
+ *  - Fable 5 is the new flagship, 2x the price of Opus ($10/$50 per M).
+ *    Full 1M context at standard pricing; no fast service tier. Mythos 5
+ *    (and Mythos Preview) share this exact tier.
  *  - Opus 4.5+ is THREE TIMES CHEAPER than the original Opus 4/4.1.
  *  - Sonnet 4.5 has 1M context with tiered pricing above 200k tokens;
  *    Sonnet 4.6 dropped that tier.
@@ -38,6 +41,16 @@ export type ModelPricing = {
 };
 
 const M = 1_000_000;
+
+const FABLE: ModelPricing = {
+  // Claude Fable 5 (and Mythos 5 / Mythos Preview, same pricing) — new
+  // flagship tier, 2x Opus. Full 1M context at standard pricing (no tier
+  // above 200k) and no fast-mode variant.
+  input: 10 / M,
+  output: 50 / M,
+  cacheWrite: 12.5 / M,
+  cacheRead: 1 / M,
+};
 
 const OPUS_NEW: ModelPricing = {
   // Opus 4.5, 4.6, 4.7 and presumably future Opus releases.
@@ -204,6 +217,8 @@ function minorVersion(model: string, family: string): number | null {
 
 export function getPricing(model: string): ModelPricing | null {
   const m = model.toLowerCase();
+
+  if (m.includes('fable') || m.includes('mythos')) return FABLE;
 
   if (m.includes('haiku')) return HAIKU;
 

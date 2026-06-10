@@ -3,6 +3,24 @@ import { costForRequest, getPricing } from '../server/pricing';
 import { costForEntry } from '../src/pricing';
 
 describe('pricing', () => {
+  it('fable 5 / mythos 5 share the flagship tier ($10/$50 per M), no fast/tier', () => {
+    for (const model of [
+      'claude-fable-5',
+      'claude-fable-5-20260601',
+      'anthropic/claude-fable-5',
+      'claude-mythos-5',
+      'claude-mythos-preview',
+    ]) {
+      const p = getPricing(model);
+      expect(p?.input).toBe(10 / 1_000_000);
+      expect(p?.output).toBe(50 / 1_000_000);
+      expect(p?.cacheWrite).toBe(12.5 / 1_000_000);
+      expect(p?.cacheRead).toBe(1 / 1_000_000);
+      expect(p?.fastMultiplier).toBeUndefined();
+      expect(p?.tiered).toBeUndefined();
+    }
+  });
+
   it('opus 4.5+ uses cheap tier ($5/$25 per M)', () => {
     for (const model of [
       'claude-opus-4-5',
@@ -163,6 +181,8 @@ describe('pricing', () => {
   it('client and server agree on cost calculation', () => {
     const tokens = { input: 12345, output: 6789, cacheWrite: 50000, cacheRead: 200000 };
     for (const model of [
+      'claude-fable-5',
+      'claude-mythos-5',
       'claude-opus-4-7',
       'claude-opus-4-6',
       'claude-opus-4-1',
