@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { PROVIDERS, type Provider, type ProviderScanStats } from './providers/index.ts';
 import { loadPromptDays, type PromptDay } from './promptHistory.ts';
+import { renderUsageSummary, summarizeUsage } from './summary.ts';
 import type { Entry, SessionMeta } from './types.ts';
 
 type ProviderInfo = {
@@ -310,6 +311,11 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       console.log(
         `Loaded ${cached.entries.length} entries — ${parts.join(', ')} in ${cached.stats.tookMs}ms`,
       );
+      const summary = renderUsageSummary(summarizeUsage(cached.entries, Date.now()));
+      if (summary.length > 0) {
+        console.log('');
+        for (const line of summary) console.log(line);
+      }
     })
     .catch((err) => console.error('Initial scan failed', err));
 
