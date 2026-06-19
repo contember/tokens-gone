@@ -19,15 +19,23 @@ export function DecompBar({
   segments,
   tall = false,
   title,
+  width,
 }: {
   segments: Segment[];
   tall?: boolean;
   title?: string;
+  /**
+   * Fraction (0..1) of the available width the bar should occupy. Lets a
+   * row's bar length encode its magnitude relative to its peers. Omit for a
+   * full-width bar (the hero).
+   */
+  width?: number;
 }) {
   const total = segments.reduce((s, x) => s + x.value, 0);
-  if (total <= 0) return <div className={`decomp${tall ? ' tall' : ''}`} />;
+  const style = width != null ? { width: `${Math.max(width, 0) * 100}%` } : undefined;
+  if (total <= 0) return <div className={`decomp${tall ? ' tall' : ''}`} style={style} />;
   return (
-    <div className={`decomp${tall ? ' tall' : ''}`} title={title}>
+    <div className={`decomp${tall ? ' tall' : ''}`} title={title} style={style}>
       {segments.map((s, i) => (
         <div
           key={i}

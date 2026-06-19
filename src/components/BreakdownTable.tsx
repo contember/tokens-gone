@@ -48,6 +48,8 @@ export function BreakdownTable({
   const [asc, setAsc] = useState(false);
   const [showAll, setShowAll] = useState(false);
 
+  const [hover, setHover] = useState<HoverState | null>(null);
+
   const sorted = useMemo(() => {
     const copy = [...rows];
     copy.sort((a, b) => {
@@ -61,6 +63,14 @@ export function BreakdownTable({
   const grandTotal = useMemo(
     () => rows.reduce((s, r) => s + r.totals.cost, 0),
     [rows],
+  );
+
+  // Bar length encodes magnitude: each bar is scaled relative to the largest
+  // value of the *currently sorted* metric, so the bars line up with the
+  // ordering you see (longest on top when sorted descending).
+  const maxMetric = useMemo(
+    () => rows.reduce((m, r) => Math.max(m, r.totals[sort]), 0),
+    [rows, sort],
   );
 
   const visible = showAll ? sorted : sorted.slice(0, topN ?? 8);
@@ -104,6 +114,7 @@ export function BreakdownTable({
             const pct = grandTotal > 0 ? (r.totals.cost / grandTotal) * 100 : 0;
             const isSelected = selected?.has(r.key) ?? false;
             const segments = computeSegments(r, decomposeBy);
+            const frac = maxMetric > 0 ? r.totals[sort] / maxMetric : 0;
             return (
               <tr
                 key={r.key}
@@ -126,8 +137,23 @@ export function BreakdownTable({
                     )}
                   </span>
                 </td>
-                <td className="cell-decomp">
-                  <DecompBar segments={segments} />
+                <td
+                  className="cell-decomp"
+                  onMouseEnter={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHover({
+                      key: r.key,
+                      row: r,
+                      segments,
+                      left: rect.left,
+                      top: rect.bottom + 6,
+                    });
+                  }}
+                  onMouseLeave={() =>
+                    setHover((h) => (h?.key === r.key ? null : h))
+                  }
+                >
+                  <DecompBar segments={segments} width={frac} />
                 </td>
                 <td>
                   <span className="cost">{fmtMoney(r.totals.cost)}</span>
@@ -147,6 +173,92 @@ export function BreakdownTable({
           </button>
         </div>
       )}
+      {hover && (
+        <ShapePopover
+          hover={hover}
+          isModel={isModel}
+          decomposeBy={decomposeBy}
+        />
+      )}
+    </div>
+  );
+}
+
+type HoverState = {
+  key: string;
+  row: Row;
+  segments: Segment[];
+  left: number;
+  top: number;
+};
+
+const SEG_LABEL: Record<Segment['cls'], string> = {
+  input: 'Input',
+  output: 'Output',
+  cwrite: 'Cache write',
+  cread: 'Cache read',
+  fable: 'Fable',
+  opus: 'Opus',
+  sonnet: 'Sonnet',
+  haiku: 'Haiku',
+  other: 'Other',
+};
+
+const SEG_COLOR: Record<Segment['cls'], string> = {
+  input: 'var(--tok-input)',
+  output: 'var(--tok-output)',
+  cwrite: 'var(--tok-cwrite)',
+  cread: 'var(--tok-cread)',
+  fable: 'var(--fable)',
+  opus: 'var(--opus)',
+  sonnet: 'var(--sonnet)',
+  haiku: 'var(--haiku)',
+  other: 'var(--other)',
+};
+
+/**
+ * Hover popover that spells out a row's shape — each segment with its value
+ * and share. Positioned `fixed` from the cell's rect so it never clips
+ * against the panel's borders. Segment values are tokens for the token-type
+ * split and cost for the model split.
+ */
+function ShapePopover({
+  hover,
+  isModel,
+  decomposeBy,
+}: {
+  hover: HoverState;
+  isModel?: boolean;
+  decomposeBy: 'type' | 'model';
+}) {
+  const total = hover.segments.reduce((s, x) => s + x.value, 0);
+  const fmtVal = decomposeBy === 'type' ? fmtTokens : fmtMoney;
+  return (
+    <div
+      className="chart-tooltip"
+      style={{ position: 'fixed', left: hover.left, top: hover.top, zIndex: 1000 }}
+    >
+      <div className="title">
+        {isModel ? modelShort(hover.key) : hover.key}
+      </div>
+      <div className="total">{fmtVal(total)}</div>
+      {hover.segments.map((s, i) => {
+        const share = total > 0 ? (s.value / total) * 100 : 0;
+        return (
+          <div className="row" key={i}>
+            <span>
+              <span className="swatch" style={{ background: SEG_COLOR[s.cls] }} />
+              {SEG_LABEL[s.cls]}
+            </span>
+            <span>
+              {fmtVal(s.value)}
+              <span className="muted" style={{ marginLeft: 6 }}>
+                {share.toFixed(0)}%
+              </span>
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }

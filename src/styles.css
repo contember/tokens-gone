@@ -999,6 +999,11 @@ td.cell-decomp {
   width: 200px;
 }
 
+/* keep even the smallest proportional bar visible */
+td.cell-decomp .decomp {
+  min-width: 8px;
+}
+
 /* ── model tags ────────────────────────────────────────── */
 
 .tag {
