@@ -146,7 +146,7 @@ export function BreakdownTable({
                       row: r,
                       segments,
                       left: rect.left,
-                      top: rect.bottom + 6,
+                      top: rect.top - 6,
                     });
                   }}
                   onMouseLeave={() =>
@@ -236,7 +236,13 @@ function ShapePopover({
   return (
     <div
       className="chart-tooltip"
-      style={{ position: 'fixed', left: hover.left, top: hover.top, zIndex: 1000 }}
+      style={{
+        position: 'fixed',
+        left: hover.left,
+        top: hover.top,
+        transform: 'translateY(-100%)',
+        zIndex: 1000,
+      }}
     >
       <div className="title">
         {isModel ? modelShort(hover.key) : hover.key}
