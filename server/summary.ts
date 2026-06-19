@@ -3,10 +3,11 @@
  * printed under the scan log when the CLI boots. Pure and self-contained
  * so it's cheap to test; `server.ts` just renders the lines.
  *
- * Windows: `today` and `yesterday` are calendar days (local midnight
- * boundaries) so they don't overlap; `7d`/`30d` are rolling windows
- * inclusive of right now. Cost reuses the server's pricing table
- * (`costForRequest`).
+ * Windows are all calendar days aligned to local midnight: `today` and
+ * `yesterday` are single days so they don't overlap; `7d`/`30d` are
+ * today plus the previous 6/29 days (so "last 7 days" matches the
+ * dashboard's "7 days" preset, not a rolling 168-hour window). Cost
+ * reuses the server's pricing table (`costForRequest`).
  */
 
 import { costForRequest } from './pricing.ts';
@@ -109,8 +110,12 @@ function startOfLocalDay(ms: number): number {
 export function summarizeUsage(entries: Entry[], now: number): UsageSummary {
   const startToday = startOfLocalDay(now);
   const startYesterday = startToday - DAY_MS;
-  const cut7 = now - 7 * DAY_MS;
-  const cut30 = now - 30 * DAY_MS;
+  // Calendar windows: "last 7 days" = today + the previous 6 calendar days,
+  // aligned to local midnight. Matches the dashboard's "7 days" preset
+  // (src/components/ActiveFilters.tsx) and keeps the windows consistent with
+  // today/yesterday above, which are also calendar days.
+  const cut7 = startToday - 6 * DAY_MS;
+  const cut30 = startToday - 29 * DAY_MS;
   const accs: Record<WindowKey, Acc> = {
     today: emptyAcc(),
     yesterday: emptyAcc(),

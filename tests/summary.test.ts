@@ -53,6 +53,17 @@ describe('summarizeUsage', () => {
     expect(s['30d'].reqs).toBe(4);
   });
 
+  it('7d/30d are calendar windows, not rolling 168h/720h', () => {
+    // NOW is Jun 15 12:00. A rolling window (now - 7*DAY = Jun 8 12:00) would
+    // include this entry; the calendar window (startOfDay(now) - 6*DAY =
+    // Jun 9 00:00) must exclude it. It should still land in 30d.
+    const startToday = new Date(2026, 5, 15, 0, 0, 0).getTime();
+    const justBeforeCalendar7 = entry({ t: startToday - 6 * DAY - 6 * 3600_000 }); // Jun 8 18:00
+    const s = summarizeUsage([justBeforeCalendar7], NOW);
+    expect(s['7d'].reqs).toBe(0);
+    expect(s['30d'].reqs).toBe(1);
+  });
+
   it('today and yesterday are disjoint calendar days', () => {
     const startToday = new Date(2026, 5, 15, 0, 0, 0).getTime();
     const entries: Entry[] = [
