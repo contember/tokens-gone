@@ -11,7 +11,8 @@
 import type { Provider } from './types.ts';
 import { claudeProvider } from './claude.ts';
 import { codexProvider } from './codex.ts';
+import { piProvider } from './pi.ts';
 
-export const PROVIDERS: readonly Provider[] = [claudeProvider, codexProvider];
+export const PROVIDERS: readonly Provider[] = [claudeProvider, codexProvider, piProvider];
 
 export type { Provider, ProviderId, ProviderScanResult, ProviderScanStats } from './types.ts';

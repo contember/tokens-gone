@@ -1,8 +1,8 @@
 # tokens-gone
 
-Local web dashboard for Claude Code token usage and cost. Reads
-`~/.claude/projects/**/*.jsonl`, aggregates tokens and dollars, lets you slice
-the data interactively.
+Local web dashboard for AI coding agent token usage and cost. Reads Claude
+Code, Codex, and Pi session logs, aggregates tokens and dollars, and lets you
+slice the data interactively.
 
 ## Run
 
@@ -12,8 +12,8 @@ npx tokens-gone
 
 That's it — it builds nothing on your machine, starts a local HTTP server,
 and opens your browser at the dashboard. Subsequent runs reuse the on-disk
-parse cache (`~/.cache/tokens-gone/cache.json`), so warm scans are sub-second
-even with thousands of session files.
+parse caches (`~/.cache/tokens-gone/*.json`), so warm scans are sub-second even
+with thousands of session files.
 
 ### Flags
 
@@ -27,6 +27,9 @@ even with thousands of session files.
 ### Environment
 
 - `CLAUDE_CONFIG_DIR` — override the Claude data dir (default `~/.claude`).
+- `CODEX_HOME` — override the Codex data dir (default `~/.codex`).
+- `PI_CODING_AGENT_DIR` — override the Pi agent dir (default `~/.pi/agent`).
+- `PI_CODING_AGENT_SESSION_DIR` — override the Pi sessions dir directly.
 - `PORT` — same as `--port`.
 
 ## Why
@@ -40,9 +43,9 @@ LiteLLM pricing every run. tokens-gone is the same idea but:
 
 ## How it works
 
-- `server/scanner.ts` walks `~/.claude/projects/`, parses JSONL streamingly,
-  caches parsed entries on disk keyed by `(path, size, mtime)`. Unchanged
-  files are reused verbatim; appended files are tail-parsed.
+- `server/providers/*` walk provider-specific JSONL directories, parse logs
+  streamingly, and cache parsed entries on disk keyed by `(path, size, mtime)`.
+  Unchanged files are reused verbatim; appended files are tail-parsed.
 - `server/pricing.ts` resolves Anthropic Claude pricing by model name
   substring (matches `claude-opus-4-7`, `anthropic/claude-sonnet-4-6`, etc.),
   with tiered pricing for Sonnet >200k and a 6× fast-mode multiplier for Opus.

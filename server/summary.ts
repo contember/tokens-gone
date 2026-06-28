@@ -19,14 +19,27 @@ const HARNESS_LABELS: Record<string, string> = {
   cc: 'Claude Code',
   codex: 'Codex',
   opencode: 'OpenCode',
+  pi: 'Pi',
 };
 
 function costForEntry(e: Entry): number {
+  const explicit = explicitCost(e);
+  if (explicit !== null) return explicit;
   return costForRequest(
     { input: e.i, output: e.o, cacheWrite: e.cc, cacheRead: e.cr },
     e.m,
     e.f === 1,
   );
+}
+
+function explicitCost(e: Entry): number | null {
+  const has =
+    e.ci !== undefined ||
+    e.co !== undefined ||
+    e.cwc !== undefined ||
+    e.crc !== undefined;
+  if (!has) return null;
+  return (e.ci ?? 0) + (e.co ?? 0) + (e.cwc ?? 0) + (e.crc ?? 0);
 }
 
 /**

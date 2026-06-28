@@ -207,4 +207,20 @@ describe('pricing', () => {
       expect(client).toBeCloseTo(server, 12);
     }
   });
+
+  it('uses explicit provider cost components when present', () => {
+    const cost = costForEntry({
+      m: 'provider/model-without-static-pricing',
+      i: 1000,
+      o: 1000,
+      cc: 1000,
+      cr: 1000,
+      f: 0,
+      ci: 0.01,
+      co: 0.02,
+      cwc: 0.003,
+      crc: 0.004,
+    });
+    expect(cost).toBeCloseTo(0.037, 12);
+  });
 });

@@ -101,10 +101,11 @@ describe('summarizeUsage', () => {
     const entries: Entry[] = [
       entry({ t: NOW - 1000 }), // cc (default)
       entry({ t: NOW - 2000, src: 'codex', m: 'gpt-5' }),
+      entry({ t: NOW - 3000, src: 'pi', ci: 0.01, co: 0.01 }),
     ];
     const s = summarizeUsage(entries, NOW);
     const labels = s.today.byHarness.map((h) => h.label).sort();
-    expect(labels).toEqual(['Claude Code', 'Codex']);
+    expect(labels).toEqual(['Claude Code', 'Codex', 'Pi']);
   });
 });
 

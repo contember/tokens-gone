@@ -8,8 +8,13 @@ export type Entry = {
   cc: number;
   cr: number;
   f: 0 | 1;
+  /** Explicit USD cost components from providers that log authoritative cost. */
+  ci?: number;
+  co?: number;
+  cwc?: number;
+  crc?: number;
   /** Source of the entry. Missing means Claude Code. */
-  src?: 'cc' | 'codex' | 'opencode';
+  src?: 'cc' | 'codex' | 'opencode' | 'pi';
 };
 
 export type SessionMeta = {
@@ -25,7 +30,7 @@ export type ProviderStats = {
 };
 
 export type ProviderInfo = {
-  id: 'cc' | 'codex' | 'opencode';
+  id: 'cc' | 'codex' | 'opencode' | 'pi';
   label: string;
   dataDir: string;
   cachePath: string;
@@ -67,7 +72,7 @@ export type ApiData = {
 };
 
 /** Tool that produced an entry. `'cc'` = Claude Code, default for legacy entries. */
-export type Harness = 'cc' | 'codex' | 'opencode';
+export type Harness = 'cc' | 'codex' | 'opencode' | 'pi';
 
 export type Filters = {
   /** ms since epoch — inclusive. */
@@ -88,6 +93,7 @@ export const HARNESS_LABELS: Record<Harness, string> = {
   cc: 'Claude Code',
   codex: 'Codex',
   opencode: 'OpenCode',
+  pi: 'Pi',
 };
 
 export type Bucket =
