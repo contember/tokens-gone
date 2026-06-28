@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react';
 import type { Entry } from '../types';
 import type { Totals } from '../aggregate';
 import { fmtInt, fmtMoney, fmtTokens, modelClass, modelShort } from '../format';
-import { DecompBar, modelSegment, type Segment } from './DecompBar';
+import { DecompBar, type Segment } from './DecompBar';
+import { FAMILIES, OTHER, familyByKey, familyOf } from '../families';
 import { costForEntry } from '../pricing';
 
 export type Row = {
@@ -192,29 +193,18 @@ type HoverState = {
   top: number;
 };
 
-const SEG_LABEL: Record<Segment['cls'], string> = {
-  input: 'Input',
-  output: 'Output',
-  cwrite: 'Cache write',
-  cread: 'Cache read',
-  fable: 'Fable',
-  opus: 'Opus',
-  sonnet: 'Sonnet',
-  haiku: 'Haiku',
-  other: 'Other',
+// Token-type segments live here; model-family segments derive their label
+// and color from the shared families.ts source of truth via `segMeta`.
+const TYPE_META: Record<string, { label: string; color: string }> = {
+  input: { label: 'Input', color: 'var(--tok-input)' },
+  output: { label: 'Output', color: 'var(--tok-output)' },
+  cwrite: { label: 'Cache write', color: 'var(--tok-cwrite)' },
+  cread: { label: 'Cache read', color: 'var(--tok-cread)' },
 };
 
-const SEG_COLOR: Record<Segment['cls'], string> = {
-  input: 'var(--tok-input)',
-  output: 'var(--tok-output)',
-  cwrite: 'var(--tok-cwrite)',
-  cread: 'var(--tok-cread)',
-  fable: 'var(--fable)',
-  opus: 'var(--opus)',
-  sonnet: 'var(--sonnet)',
-  haiku: 'var(--haiku)',
-  other: 'var(--other)',
-};
+function segMeta(cls: Segment['cls']): { label: string; color: string } {
+  return TYPE_META[cls] ?? familyByKey(cls);
+}
 
 /**
  * Hover popover that spells out a row's shape — each segment with its value
@@ -253,8 +243,8 @@ function ShapePopover({
         return (
           <div className="row" key={i}>
             <span>
-              <span className="swatch" style={{ background: SEG_COLOR[s.cls] }} />
-              {SEG_LABEL[s.cls]}
+              <span className="swatch" style={{ background: segMeta(s.cls).color }} />
+              {segMeta(s.cls).label}
             </span>
             <span>
               {fmtVal(s.value)}
@@ -284,14 +274,13 @@ function computeSegments(r: Row, decomposeBy: 'type' | 'model'): Segment[] {
   const byFam = new Map<Segment['cls'], number>();
   for (let i = 0; i < r.entries.length; i++) {
     const e = r.entries[i]!;
-    const cls = modelSegment(e.m);
+    const cls = familyOf(e.m).key;
     byFam.set(cls, (byFam.get(cls) ?? 0) + costForEntry(e));
   }
-  const order: Segment['cls'][] = ['fable', 'opus', 'sonnet', 'haiku', 'other'];
   const out: Segment[] = [];
-  for (const k of order) {
-    const v = byFam.get(k);
-    if (v != null && v > 0) out.push({ cls: k, value: v });
+  for (const fam of [...FAMILIES, OTHER]) {
+    const v = byFam.get(fam.key);
+    if (v != null && v > 0) out.push({ cls: fam.key, value: v });
   }
   return out;
 }

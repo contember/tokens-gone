@@ -1,3 +1,5 @@
+import { familyOf } from './families';
+
 export function fmtMoney(n: number): string {
   if (n === 0) return '$0';
   if (n >= 1000) return `$${Math.round(n).toLocaleString('en-US')}`;
@@ -29,13 +31,14 @@ export function fmtRelativeDay(t: number, now = Date.now()): string {
   return new Date(t).toLocaleDateString();
 }
 
+/**
+ * CSS class for a model's family tag. Returns '' for the catch-all "other"
+ * bucket so unrecognized models get the neutral base `.tag` styling rather
+ * than a colored family chip. See families.ts for the classification.
+ */
 export function modelClass(model: string): string {
-  const m = model.toLowerCase();
-  if (m.includes('fable') || m.includes('mythos')) return 'fable';
-  if (m.includes('opus')) return 'opus';
-  if (m.includes('haiku')) return 'haiku';
-  if (m.includes('sonnet')) return 'sonnet';
-  return '';
+  const key = familyOf(model).key;
+  return key === 'other' ? '' : key;
 }
 
 export function modelShort(model: string): string {

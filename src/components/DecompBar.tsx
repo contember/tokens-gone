@@ -9,8 +9,10 @@
  * of each model/project's usage scannable in one glance.
  */
 
+import type { FamilyKey } from '../families';
+
 export type Segment = {
-  cls: 'input' | 'output' | 'cwrite' | 'cread' | 'fable' | 'opus' | 'sonnet' | 'haiku' | 'other';
+  cls: 'input' | 'output' | 'cwrite' | 'cread' | FamilyKey;
   value: number;
   label?: string;
 };
@@ -46,13 +48,4 @@ export function DecompBar({
       ))}
     </div>
   );
-}
-
-export function modelSegment(model: string): Segment['cls'] {
-  const m = model.toLowerCase();
-  if (m.includes('fable') || m.includes('mythos')) return 'fable';
-  if (m.includes('opus')) return 'opus';
-  if (m.includes('sonnet')) return 'sonnet';
-  if (m.includes('haiku')) return 'haiku';
-  return 'other';
 }

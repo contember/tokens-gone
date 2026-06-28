@@ -40,6 +40,7 @@
   --opus: #d4a574;
   --sonnet: #c87f5a;
   --haiku: #94a172;
+  --gpt: #5bb39a;
   --other: #6e6862;
 
   /* ── token-type hues (decomposition bar segments) ─────── */
@@ -113,6 +114,7 @@
   --opus: #b07a3e;
   --sonnet: #a8512e;
   --haiku: #6e8348;
+  --gpt: #3a8a73;
   --other: #8a8278;
 
   --tok-input: #6e8348;
@@ -743,6 +745,7 @@ a:hover {
 .decomp .seg.opus { background: var(--opus); }
 .decomp .seg.sonnet { background: var(--sonnet); }
 .decomp .seg.haiku { background: var(--haiku); }
+.decomp .seg.gpt { background: var(--gpt); }
 .decomp .seg.other { background: var(--other); }
 
 /* ── activity heatmap ──────────────────────────────────── */
@@ -1040,6 +1043,12 @@ td.cell-decomp .decomp {
   background: rgba(148, 161, 114, 0.08);
   color: var(--haiku);
   border-color: rgba(148, 161, 114, 0.2);
+}
+
+.tag.gpt {
+  background: rgba(91, 179, 154, 0.08);
+  color: var(--gpt);
+  border-color: rgba(91, 179, 154, 0.2);
 }
 
 /* ── filters dropdown panel ────────────────────────────── */

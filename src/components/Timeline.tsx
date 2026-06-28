@@ -3,22 +3,15 @@ import type { Entry } from '../types';
 import { dayKey, hourBucket, monthKey, weekBucket } from '../aggregate';
 import { costForEntry } from '../pricing';
 import { BarChart, type ChartPoint } from './Chart';
-import { fmtMoney, modelClass, modelShort } from '../format';
+import { fmtMoney } from '../format';
+import { FAMILIES, OTHER, familyOf, type Family } from '../families';
 
 type Granularity = 'hour' | 'day' | 'week' | 'month';
-
-const MODEL_COLOR: Record<string, string> = {
-  fable: 'var(--fable)',
-  opus: 'var(--opus)',
-  sonnet: 'var(--sonnet)',
-  haiku: 'var(--haiku)',
-  other: 'var(--other)',
-};
 
 /**
  * Cost-over-time chart with granularity switcher. Picks a sensible default
  * based on the visible range: narrow ranges default to hourly, wide ones
- * to monthly. Stacking is by model family (fable/opus/sonnet/haiku/other).
+ * to monthly. Stacking is by model family (see families.ts).
  */
 export function Timeline({ entries, rangeFrom, rangeTo }: { entries: Entry[]; rangeFrom: number | null; rangeTo: number | null }) {
   const defaultGran = useMemo<Granularity>(() => {
@@ -57,17 +50,17 @@ export function Timeline({ entries, rangeFrom, rangeTo }: { entries: Entry[]; ra
         b = { full: meta.full, label: meta.label, sort: meta.sort, byModel: new Map() };
         buckets.set(key, b);
       }
-      const cls = modelClass(e.m) || 'other';
-      b.byModel.set(cls, (b.byModel.get(cls) ?? 0) + costForEntry(e));
+      const famKey = familyOf(e.m).key;
+      b.byModel.set(famKey, (b.byModel.get(famKey) ?? 0) + costForEntry(e));
     }
 
     const toPoint = (b: { full: string; label: string; byModel: Map<string, number> }): ChartPoint => {
       let total = 0;
       const segments: ChartPoint['segments'] = [];
-      for (const k of ['fable', 'opus', 'sonnet', 'haiku', 'other'] as const) {
-        const v = b.byModel.get(k);
+      for (const fam of [...FAMILIES, OTHER]) {
+        const v = b.byModel.get(fam.key);
         if (v != null && v > 0) {
-          segments.push({ value: v, color: MODEL_COLOR[k]!, label: labelForFamily(k) });
+          segments.push({ value: v, color: fam.color, label: fam.label });
           total += v;
         }
       }
@@ -118,28 +111,23 @@ export function Timeline({ entries, rangeFrom, rangeTo }: { entries: Entry[]; ra
       </div>
       <BarChart data={points} height={220} />
       <div style={{ display: 'flex', gap: 16, marginTop: 12, fontSize: 11, color: 'var(--t-3)' }}>
-        <Legend cls="fable" />
-        <Legend cls="opus" />
-        <Legend cls="sonnet" />
-        <Legend cls="haiku" />
+        {FAMILIES.map((fam) => (
+          <Legend key={fam.key} fam={fam} />
+        ))}
       </div>
     </div>
   );
 }
 
-function Legend({ cls }: { cls: 'fable' | 'opus' | 'sonnet' | 'haiku' }) {
+function Legend({ fam }: { fam: Family }) {
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-      <span style={{ width: 8, height: 8, borderRadius: 1, background: `var(--${cls})` }} />
-      <span className={`tag ${cls}`} style={{ fontSize: 10, padding: '0 4px' }}>
-        {labelForFamily(cls)}
+      <span style={{ width: 8, height: 8, borderRadius: 1, background: fam.color }} />
+      <span className={`tag ${fam.key}`} style={{ fontSize: 10, padding: '0 4px' }}>
+        {fam.label}
       </span>
     </span>
   );
-}
-
-function labelForFamily(k: string): string {
-  return k.charAt(0).toUpperCase() + k.slice(1);
 }
 
 /**
