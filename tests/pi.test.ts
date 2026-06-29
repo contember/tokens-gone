@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { _scanPi as scanPi } from '../server/providers/pi';
+import { _scanPi as scanPi, piProvider } from '../server/providers/pi';
 import { flushCacheWrites } from '../server/providers/base';
 
 let dir: string;
@@ -112,6 +112,34 @@ afterAll(async () => {
 });
 
 describe('pi scanner', () => {
+  it('resolves the default session directory from Pi settings', async () => {
+    const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const oldSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR;
+    const agentDir = join(dir, 'configured-agent');
+    const configuredSessions = join(agentDir, 'configured-sessions');
+    const envSessions = join(dir, 'env-sessions');
+
+    try {
+      delete process.env.PI_CODING_AGENT_SESSION_DIR;
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      await mkdir(agentDir, { recursive: true });
+      await writeFile(
+        join(agentDir, 'settings.json'),
+        JSON.stringify({ sessionDir: 'configured-sessions' }),
+      );
+
+      expect(piProvider.defaultDataDir()).toBe(configuredSessions);
+
+      process.env.PI_CODING_AGENT_SESSION_DIR = envSessions;
+      expect(piProvider.defaultDataDir()).toBe(envSessions);
+    } finally {
+      if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+      if (oldSessionDir === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR;
+      else process.env.PI_CODING_AGENT_SESSION_DIR = oldSessionDir;
+    }
+  });
+
   it('parses assistant message usage, metadata, and Pi cost components', async () => {
     const r = await scanPi({ dataDir, cachePath: cache });
     expect(r.entries.length).toBe(1);
@@ -173,5 +201,48 @@ describe('pi scanner', () => {
     expect(r.entries[1]!.cr).toBe(4);
     expect(r.entries[1]!.cc).toBe(1);
     expect(r.stats.cachedFiles).toBe(r.stats.files - 1);
+  });
+
+  it('deduplicates copied assistant usage from branched session files', async () => {
+    const localDir = await mkdtemp(join(tmpdir(), 'tokens-gone-pi-dedupe-'));
+    try {
+      const localDataDir = join(localDir, 'sessions');
+      const sourceDir = join(localDataDir, '--home-me-projects-source--');
+      const branchDir = join(localDataDir, '--home-me-projects-branch--');
+      await mkdir(sourceDir, { recursive: true });
+      await mkdir(branchDir, { recursive: true });
+      const sharedAssistant = assistantLine({
+        input: 100,
+        output: 25,
+        cacheRead: 40,
+        cacheWrite: 5,
+      });
+      await writeFile(
+        join(sourceDir, '2026-06-01T09-00-00.000Z_source.jsonl'),
+        [
+          sessionLine({ id: 'source-session', cwd: '/home/me/projects/source' }),
+          sharedAssistant,
+        ].join('\n'),
+      );
+      await writeFile(
+        join(branchDir, '2026-06-01T09-00-00.000Z_branch.jsonl'),
+        [
+          sessionLine({
+            id: 'branch-session',
+            cwd: '/home/me/projects/branch',
+            parentSession: join(sourceDir, '2026-06-01T09-00-00.000Z_source.jsonl'),
+          }),
+          sharedAssistant,
+        ].join('\n'),
+      );
+
+      const r = await scanPi({ dataDir: localDataDir, useCache: false });
+      expect(r.stats.files).toBe(2);
+      expect(r.entries.length).toBe(1);
+      expect(r.entries[0]!.i).toBe(100);
+      expect(r.entries[0]!.o).toBe(25);
+    } finally {
+      await rm(localDir, { recursive: true, force: true });
+    }
   });
 });

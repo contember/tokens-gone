@@ -17,9 +17,9 @@
  */
 
 import { stat } from 'node:fs/promises';
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { join, sep } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import type { Entry, SessionMeta } from '../types.ts';
 import type {
@@ -65,13 +65,41 @@ function expandHome(path: string): string {
   return path;
 }
 
+function defaultAgentDir(): string {
+  return process.env.PI_CODING_AGENT_DIR
+    ? expandHome(process.env.PI_CODING_AGENT_DIR)
+    : join(homedir(), '.pi', 'agent');
+}
+
+function resolveConfigPath(path: string, baseDir: string): string {
+  const expanded = expandHome(path);
+  return isAbsolute(expanded) ? expanded : resolve(baseDir, expanded);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function sessionDirFromSettings(agentDir: string): string | undefined {
+  try {
+    const raw = readFileSync(join(agentDir, 'settings.json'), 'utf-8');
+    const settings: unknown = JSON.parse(raw);
+    if (!isRecord(settings)) return undefined;
+    const sessionDir = settings.sessionDir;
+    if (typeof sessionDir !== 'string' || sessionDir.trim() === '') return undefined;
+    return resolveConfigPath(sessionDir, agentDir);
+  } catch {
+    return undefined;
+  }
+}
+
 function defaultDataDir(): string {
   if (process.env.PI_CODING_AGENT_SESSION_DIR) {
     return expandHome(process.env.PI_CODING_AGENT_SESSION_DIR);
   }
-  const agentDir = process.env.PI_CODING_AGENT_DIR
-    ? expandHome(process.env.PI_CODING_AGENT_DIR)
-    : join(homedir(), '.pi', 'agent');
+  const agentDir = defaultAgentDir();
+  const configuredSessionDir = sessionDirFromSettings(agentDir);
+  if (configuredSessionDir) return configuredSessionDir;
   return join(agentDir, 'sessions');
 }
 
@@ -158,6 +186,33 @@ function addSessionMeta(
 ): void {
   if (!sessionId || (!summary && !firstPrompt)) return;
   sessionMeta[sessionId] = { summary, firstPrompt };
+}
+
+function dedupKey(e: Entry): string {
+  return [
+    e.t,
+    e.m,
+    e.i,
+    e.o,
+    e.cc,
+    e.cr,
+    e.ci ?? '',
+    e.co ?? '',
+    e.cwc ?? '',
+    e.crc ?? '',
+  ].join('|');
+}
+
+function dedupEntries(entries: Entry[]): Entry[] {
+  const seen = new Set<string>();
+  const out: Entry[] = [];
+  for (const e of entries) {
+    const key = dedupKey(e);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(e);
+  }
+  return out;
 }
 
 async function parseFile(
@@ -388,10 +443,11 @@ async function scanPi(options: ProviderScanOptions = {}): Promise<ProviderScanRe
     }
   }
 
-  allEntries.sort((a, b) => a.t - b.t);
+  const deduped = dedupEntries(allEntries);
+  deduped.sort((a, b) => a.t - b.t);
 
   return {
-    entries: allEntries,
+    entries: deduped,
     sessionMeta,
     stats: {
       files: files.length,
