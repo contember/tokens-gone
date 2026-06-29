@@ -32,11 +32,16 @@ export type Entry = {
   h?: string;
   /**
    * Source of the entry. Absence is treated as `'cc'` (Claude Code) to keep
-   * the field off the wire for the common case — only codex/opencode entries
+   * the field off the wire for the common case — only non-Claude entries
    * pay the extra byte. Useful for routing pricing rules and (eventually)
    * filtering in the UI.
    */
-  src?: 'cc' | 'codex' | 'opencode';
+  src?: 'cc' | 'codex' | 'opencode' | 'pi';
+  /** Explicit USD cost components from providers that log authoritative cost. */
+  ci?: number;
+  co?: number;
+  cwc?: number;
+  crc?: number;
 };
 
 /**

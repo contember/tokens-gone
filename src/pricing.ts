@@ -209,7 +209,13 @@ export function costForEntry(e: {
   cc: number;
   cr: number;
   f: 0 | 1;
+  ci?: number;
+  co?: number;
+  cwc?: number;
+  crc?: number;
 }): number {
+  const explicit = explicitCost(e);
+  if (explicit !== null) return explicit;
   const p = getPricing(e.m);
   if (!p) return 0;
   const cost =
@@ -235,7 +241,13 @@ export function costBreakdown(e: {
   cc: number;
   cr: number;
   f: 0 | 1;
+  ci?: number;
+  co?: number;
+  cwc?: number;
+  crc?: number;
 }): { input: number; output: number; cwrite: number; cread: number; total: number } {
+  const explicit = explicitCostBreakdown(e);
+  if (explicit) return explicit;
   const p = getPricing(e.m);
   if (!p) return { input: 0, output: 0, cwrite: 0, cread: 0, total: 0 };
   const mult = e.f && p.fastMultiplier ? p.fastMultiplier : 1;
@@ -243,5 +255,34 @@ export function costBreakdown(e: {
   const output = tieredCost(e.o, p.output, p.tiered?.output) * mult;
   const cwrite = tieredCost(e.cc, p.cacheWrite, p.tiered?.cacheWrite) * mult;
   const cread = tieredCost(e.cr, p.cacheRead, p.tiered?.cacheRead) * mult;
+  return { input, output, cwrite, cread, total: input + output + cwrite + cread };
+}
+
+function explicitCost(e: {
+  ci?: number;
+  co?: number;
+  cwc?: number;
+  crc?: number;
+}): number | null {
+  const b = explicitCostBreakdown(e);
+  return b ? b.total : null;
+}
+
+function explicitCostBreakdown(e: {
+  ci?: number;
+  co?: number;
+  cwc?: number;
+  crc?: number;
+}): { input: number; output: number; cwrite: number; cread: number; total: number } | null {
+  const has =
+    e.ci !== undefined ||
+    e.co !== undefined ||
+    e.cwc !== undefined ||
+    e.crc !== undefined;
+  if (!has) return null;
+  const input = e.ci ?? 0;
+  const output = e.co ?? 0;
+  const cwrite = e.cwc ?? 0;
+  const cread = e.crc ?? 0;
   return { input, output, cwrite, cread, total: input + output + cwrite + cread };
 }

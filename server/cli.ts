@@ -12,7 +12,7 @@ type Args = {
   open: boolean;
 };
 
-const HELP = `tokens-gone — local Claude Code usage dashboard
+const HELP = `tokens-gone — local AI coding agent usage dashboard
 
 Usage: tokens-gone [options]
 
@@ -23,8 +23,11 @@ Options:
   -v, --version    Print version
 
 Environment:
-  PORT                Same as --port
-  CLAUDE_CONFIG_DIR   Override the Claude data dir (default ~/.claude)
+  PORT                          Same as --port
+  CLAUDE_CONFIG_DIR             Override the Claude data dir (default ~/.claude)
+  CODEX_HOME                    Override the Codex data dir (default ~/.codex)
+  PI_CODING_AGENT_DIR           Override the Pi agent dir (default ~/.pi/agent)
+  PI_CODING_AGENT_SESSION_DIR   Override the Pi sessions dir directly
 `;
 
 function parseArgs(argv: string[]): Args {

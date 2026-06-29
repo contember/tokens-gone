@@ -287,7 +287,7 @@ function Dashboard({
       <header className="app-head">
         <div className="brand">
           <span className="brand-mark">tokens-gone</span>
-          <span className="brand-sub">Claude Code usage</span>
+          <span className="brand-sub">Agent usage</span>
         </div>
         <div className="right">
           <span>
