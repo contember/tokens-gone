@@ -198,7 +198,18 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     return inFlight;
   }
 
-  async function api(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<void> {
+  function providerForSession(sessionId: string): Provider | undefined {
+    if (!cached) return undefined;
+    for (const e of cached.entries) {
+      if (e.s !== sessionId) continue;
+      const providerId = e.src ?? 'cc';
+      return PROVIDERS.find((p) => p.id === providerId);
+    }
+    return undefined;
+  }
+
+  async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const pathname = url.pathname;
     if (pathname === '/api/health') {
       sendJson(req, res, { ok: true });
       return;
@@ -213,6 +224,27 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         providers: cached!.providers,
         generatedAt: cached!.generatedAt,
       });
+      return;
+    }
+
+    if (pathname === '/api/session-transcript') {
+      if (req.method !== 'GET') {
+        sendJson(req, res, { error: 'Method Not Allowed' }, 405);
+        return;
+      }
+      const sessionId = url.searchParams.get('session');
+      if (!sessionId) {
+        sendJson(req, res, { error: 'Missing session query parameter' }, 400);
+        return;
+      }
+      if (!cached) await refresh();
+      const provider = providerForSession(sessionId);
+      if (!provider?.readTranscript) {
+        sendJson(req, res, { error: 'No raw transcript reader for this session' }, 404);
+        return;
+      }
+      const transcript = await provider.readTranscript(sessionId);
+      sendJson(req, res, transcript);
       return;
     }
 
@@ -270,7 +302,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     try {
       const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
       if (url.pathname.startsWith('/api/')) {
-        await api(req, res, url.pathname);
+        await api(req, res, url);
       } else {
         await serveStatic(req, res, url.pathname);
       }

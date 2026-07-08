@@ -584,6 +584,7 @@ export function recentBurn(entries: Entry[], windowMs = 60 * 60 * 1000): {
 
 export type SessionInfo = {
   s: string;
+  src?: Entry['src'];
   project: string;
   firstSeen: number;
   lastSeen: number;
@@ -593,6 +594,10 @@ export type SessionInfo = {
   title?: string;
   /** First user prompt — fallback label when no summary exists yet. */
   firstPrompt?: string;
+  parentSessionId?: string;
+  threadSource?: string;
+  agentNickname?: string;
+  agentRole?: string;
 };
 
 /**
@@ -611,6 +616,7 @@ export function sessions(
       const m = meta[e.s];
       s = {
         s: e.s,
+        src: e.src,
         project: e.p,
         firstSeen: e.t,
         lastSeen: e.t,
@@ -618,6 +624,10 @@ export function sessions(
         models: [],
         title: m?.summary,
         firstPrompt: m?.firstPrompt,
+        parentSessionId: m?.parentSessionId,
+        threadSource: m?.threadSource,
+        agentNickname: m?.agentNickname,
+        agentRole: m?.agentRole,
       };
       map.set(e.s, s);
     }

@@ -27,7 +27,7 @@ import { createReadStream, existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import type { Entry, SessionMeta } from '../types.ts';
+import type { Entry, SessionMeta, SessionTranscript, TranscriptEntry } from '../types.ts';
 import type {
   Provider,
   ProviderScanOptions,
@@ -43,14 +43,59 @@ import {
   saveCache,
   type FileInfo,
 } from './base.ts';
+import {
+  codexTokens,
+  countEntries,
+  imagesFromUnknown,
+  messageEntries,
+  parseTimestampMs,
+  providerPath,
+  readJsonlObjects,
+  recordField,
+  roleFromString,
+  sortStreams,
+  streamLabel,
+  stringField,
+  textFromUnknown,
+} from './transcript.ts';
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const MAX_PROMPT_CHARS = 200;
 
 type CodexExtra = {
   sessionId?: string;
   firstPrompt?: string;
+  parentSessionId?: string;
+  threadSource?: string;
+  agentNickname?: string;
+  agentRole?: string;
 };
+
+function codexSessionMeta(record: CodexExtra): SessionMeta | undefined {
+  const meta: SessionMeta = {};
+  let hasAny = false;
+  if (record.firstPrompt) {
+    meta.firstPrompt = record.firstPrompt;
+    hasAny = true;
+  }
+  if (record.parentSessionId) {
+    meta.parentSessionId = record.parentSessionId;
+    hasAny = true;
+  }
+  if (record.threadSource) {
+    meta.threadSource = record.threadSource;
+    hasAny = true;
+  }
+  if (record.agentNickname) {
+    meta.agentNickname = record.agentNickname;
+    hasAny = true;
+  }
+  if (record.agentRole) {
+    meta.agentRole = record.agentRole;
+    hasAny = true;
+  }
+  return hasAny ? meta : undefined;
+}
 
 function defaultDataDir(): string {
   return process.env.CODEX_HOME
@@ -74,6 +119,10 @@ type ParsedFile = {
   lines: number;
   sessionId?: string;
   firstPrompt?: string;
+  parentSessionId?: string;
+  threadSource?: string;
+  agentNickname?: string;
+  agentRole?: string;
 };
 
 /**
@@ -91,6 +140,10 @@ async function parseFile(
     projectName?: string;
     currentModel?: string;
     firstPrompt?: string;
+    parentSessionId?: string;
+    threadSource?: string;
+    agentNickname?: string;
+    agentRole?: string;
   },
 ): Promise<ParsedFile> {
   let lines = 0;
@@ -99,6 +152,10 @@ async function parseFile(
   let projectName = primed?.projectName;
   let currentModel = primed?.currentModel;
   let firstPrompt = primed?.firstPrompt;
+  let parentSessionId = primed?.parentSessionId;
+  let threadSource = primed?.threadSource;
+  let agentNickname = primed?.agentNickname;
+  let agentRole = primed?.agentRole;
 
   const stream = createReadStream(path, { encoding: 'utf-8', start: fromOffset });
   const rl = createInterface({ input: stream, crlfDelay: Infinity });
@@ -130,6 +187,16 @@ async function parseFile(
 
     if (type === 'session_meta') {
       if (!sessionId && typeof payload.id === 'string') sessionId = payload.id;
+      if (typeof payload.thread_source === 'string') threadSource = payload.thread_source;
+      if (typeof payload.agent_nickname === 'string') agentNickname = payload.agent_nickname;
+      if (typeof payload.agent_role === 'string') agentRole = payload.agent_role;
+      const parent =
+        typeof payload.parent_thread_id === 'string'
+          ? payload.parent_thread_id
+          : typeof payload.session_id === 'string'
+            ? payload.session_id
+            : undefined;
+      if (parent && parent !== payload.id) parentSessionId = parent;
       if (!projectName && typeof payload.cwd === 'string') {
         projectName = projectNameFromCwd(payload.cwd);
       }
@@ -194,7 +261,7 @@ async function parseFile(
     }
   }
 
-  return { entries, lines, sessionId, firstPrompt };
+  return { entries, lines, sessionId, firstPrompt, parentSessionId, threadSource, agentNickname, agentRole };
 }
 
 async function scanCodex(options: ProviderScanOptions = {}): Promise<ProviderScanResult> {
@@ -241,8 +308,9 @@ async function scanCodex(options: ProviderScanOptions = {}): Promise<ProviderSca
         newFiles[info.path] = state.cached;
         cachedFiles++;
         for (const e of state.cached.entries) allEntries.push(e);
-        if (state.cached.sessionId && state.cached.firstPrompt) {
-          sessionMeta[state.cached.sessionId] = { firstPrompt: state.cached.firstPrompt };
+        const meta = codexSessionMeta(state.cached);
+        if (state.cached.sessionId && meta) {
+          sessionMeta[state.cached.sessionId] = meta;
         }
         return;
       }
@@ -257,12 +325,20 @@ async function scanCodex(options: ProviderScanOptions = {}): Promise<ProviderSca
         const parsed = await parseFile(info.path, state.fromOffset, {
           sessionId: state.cached.sessionId,
           firstPrompt: state.cached.firstPrompt,
+          parentSessionId: state.cached.parentSessionId,
+          threadSource: state.cached.threadSource,
+          agentNickname: state.cached.agentNickname,
+          agentRole: state.cached.agentRole,
           currentModel: lastCachedEntry?.m,
         });
         parsedLines += parsed.lines;
         const merged = [...state.cached.entries, ...parsed.entries];
         const sessionIdMerged = state.cached.sessionId ?? parsed.sessionId;
         const firstPromptMerged = state.cached.firstPrompt ?? parsed.firstPrompt;
+        const parentSessionIdMerged = state.cached.parentSessionId ?? parsed.parentSessionId;
+        const threadSourceMerged = state.cached.threadSource ?? parsed.threadSource;
+        const agentNicknameMerged = state.cached.agentNickname ?? parsed.agentNickname;
+        const agentRoleMerged = state.cached.agentRole ?? parsed.agentRole;
         const record: FileCacheRecord<CodexExtra> = {
           path: info.path,
           size: info.size,
@@ -270,11 +346,16 @@ async function scanCodex(options: ProviderScanOptions = {}): Promise<ProviderSca
           entries: merged,
           sessionId: sessionIdMerged,
           firstPrompt: firstPromptMerged,
+          parentSessionId: parentSessionIdMerged,
+          threadSource: threadSourceMerged,
+          agentNickname: agentNicknameMerged,
+          agentRole: agentRoleMerged,
         };
         newFiles[info.path] = record;
         for (const e of merged) allEntries.push(e);
-        if (sessionIdMerged && firstPromptMerged) {
-          sessionMeta[sessionIdMerged] = { firstPrompt: firstPromptMerged };
+        const meta = codexSessionMeta(record);
+        if (sessionIdMerged && meta) {
+          sessionMeta[sessionIdMerged] = meta;
         }
         return;
       }
@@ -289,11 +370,16 @@ async function scanCodex(options: ProviderScanOptions = {}): Promise<ProviderSca
         entries: parsed.entries,
         sessionId: parsed.sessionId,
         firstPrompt: parsed.firstPrompt,
+        parentSessionId: parsed.parentSessionId,
+        threadSource: parsed.threadSource,
+        agentNickname: parsed.agentNickname,
+        agentRole: parsed.agentRole,
       };
       newFiles[info.path] = record;
       for (const e of parsed.entries) allEntries.push(e);
-      if (parsed.sessionId && parsed.firstPrompt) {
-        sessionMeta[parsed.sessionId] = { firstPrompt: parsed.firstPrompt };
+      const meta = codexSessionMeta(record);
+      if (parsed.sessionId && meta) {
+        sessionMeta[parsed.sessionId] = meta;
       }
     },
   );
@@ -321,6 +407,230 @@ async function scanCodex(options: ProviderScanOptions = {}): Promise<ProviderSca
   };
 }
 
+async function readCodexTranscript(
+  sessionId: string,
+  options: ProviderScanOptions = {},
+): Promise<SessionTranscript> {
+  const defaultDir = defaultDataDir();
+  const sessionsDir = options.dataDir ?? defaultDir;
+  const cachePath = options.cachePath ?? defaultCachePath();
+  const concurrency = options.concurrency ?? 16;
+  const useCacheIndex =
+    options.useCache !== false && (options.cachePath !== undefined || sessionsDir === defaultDir);
+  if (!existsSync(sessionsDir)) return emptyCodexTranscript(sessionId);
+
+  const files = await transcriptFiles(sessionsDir, cachePath, sessionId, useCacheIndex);
+  const streams: SessionTranscript['streams'] = [];
+
+  await pMap(files, concurrency, async (path) => {
+    const entries: TranscriptEntry[] = [];
+    let fileSessionId: string | undefined;
+    let currentModel: string | undefined;
+    try {
+      await readJsonlObjects(path, (json, lineNo) => {
+        const type = stringField(json, 'type');
+        const payload = recordField(json, 'payload');
+        if (type === 'session_meta' && payload) {
+          fileSessionId = stringField(payload, 'id') ?? fileSessionId;
+        }
+        if (type === 'turn_context' && payload) {
+          currentModel = stringField(payload, 'model') ?? currentModel;
+        }
+        entries.push(...codexLineEntries(json, path, lineNo, currentModel));
+      });
+    } catch {
+      return;
+    }
+    if (fileSessionId !== sessionId) return;
+
+    const rel = providerPath(sessionsDir, path);
+    streams.push({
+      id: rel,
+      label: streamLabel(rel, 'main'),
+      path: rel,
+      kind: 'main',
+      isSidechain: false,
+      entries,
+    });
+  });
+
+  sortStreams(streams);
+  return {
+    sessionId,
+    provider: 'codex',
+    streams,
+    sourceFiles: streams.length,
+    totalEntries: countEntries(streams),
+    missingRaw: streams.length === 0,
+  };
+}
+
+async function transcriptFiles(
+  sessionsDir: string,
+  cachePath: string,
+  sessionId: string,
+  useCache: boolean,
+): Promise<string[]> {
+  if (useCache) {
+    const cache = await loadCache<CodexExtra>(cachePath, CACHE_VERSION);
+    const cachedMatches = Object.values(cache.files).filter((record) => record.sessionId === sessionId);
+    if (cachedMatches.length > 0) {
+      const paths = new Set<string>();
+      for (const record of cachedMatches) {
+        if (existsSync(record.path)) paths.add(record.path);
+      }
+      return [...paths];
+    }
+  }
+  return listJsonlFiles(sessionsDir);
+}
+
+function emptyCodexTranscript(sessionId: string): SessionTranscript {
+  return {
+    sessionId,
+    provider: 'codex',
+    streams: [],
+    sourceFiles: 0,
+    totalEntries: 0,
+    missingRaw: true,
+  };
+}
+
+function codexLineEntries(
+  json: Record<string, unknown>,
+  path: string,
+  lineNo: number,
+  currentModel: string | undefined,
+): TranscriptEntry[] {
+  const type = stringField(json, 'type') ?? 'event';
+  const payload = recordField(json, 'payload');
+  const timestamp = parseTimestampMs(json.timestamp);
+  const idBase = `${path}:${lineNo}`;
+
+  if (type === 'session_meta') {
+    return [{
+      id: idBase,
+      role: 'system',
+      kind: 'event',
+      title: 'Session meta',
+      rawType: type,
+      isSidechain: false,
+      isCompactSummary: false,
+      t: timestamp,
+      text: textFromUnknown(payload ?? json),
+      images: imagesFromUnknown(payload ?? json),
+    }];
+  }
+
+  if (type === 'turn_context') {
+    return [{
+      id: idBase,
+      role: 'system',
+      kind: 'event',
+      title: currentModel ? `Turn context · ${currentModel}` : 'Turn context',
+      rawType: type,
+      isSidechain: false,
+      isCompactSummary: false,
+      t: timestamp,
+      text: textFromUnknown(payload ?? json),
+      images: imagesFromUnknown(payload ?? json),
+      model: currentModel,
+    }];
+  }
+
+  if (type === 'event_msg' && payload) {
+    const payloadType = stringField(payload, 'type') ?? 'event';
+    if (payloadType === 'user_message') {
+      return messageEntries({
+        idBase,
+        rawType: `${type}:${payloadType}`,
+        role: 'user',
+        content: payload.message,
+        timestamp,
+        model: currentModel,
+        isSidechain: false,
+        isCompactSummary: false,
+      });
+    }
+
+    if (payloadType === 'token_count') {
+      const info = recordField(payload, 'info');
+      const usage = info ? recordField(info, 'last_token_usage') : undefined;
+      return [{
+        id: idBase,
+        role: 'event',
+        kind: 'event',
+        title: 'Token count',
+        rawType: `${type}:${payloadType}`,
+        isSidechain: false,
+        isCompactSummary: false,
+        t: timestamp,
+        text: textFromUnknown(info ?? payload),
+        images: imagesFromUnknown(info ?? payload),
+        model: currentModel,
+        tokens: codexTokens(usage),
+      }];
+    }
+
+    return [{
+      id: idBase,
+      role: 'event',
+      kind: 'event',
+      title: `Codex event · ${payloadType}`,
+      rawType: `${type}:${payloadType}`,
+      isSidechain: false,
+      isCompactSummary: false,
+      t: timestamp,
+      text: textFromUnknown(payload),
+      images: imagesFromUnknown(payload),
+      model: currentModel,
+    }];
+  }
+
+  if (type === 'response_item' && payload) {
+    const payloadType = stringField(payload, 'type') ?? 'response_item';
+    if (payloadType === 'message') {
+      return messageEntries({
+        idBase,
+        rawType: `${type}:${payloadType}`,
+        role: roleFromString(stringField(payload, 'role')),
+        content: payload.content,
+        timestamp,
+        model: currentModel,
+        isSidechain: false,
+        isCompactSummary: false,
+      });
+    }
+    return [{
+      id: idBase,
+      role: 'event',
+      kind: 'event',
+      title: `Response item · ${payloadType}`,
+      rawType: `${type}:${payloadType}`,
+      isSidechain: false,
+      isCompactSummary: false,
+      t: timestamp,
+      text: textFromUnknown(payload),
+      images: imagesFromUnknown(payload),
+      model: currentModel,
+    }];
+  }
+
+  return [{
+    id: idBase,
+    role: 'event',
+    kind: 'event',
+    title: `Event · ${type}`,
+    rawType: type,
+    isSidechain: false,
+    isCompactSummary: false,
+    t: timestamp,
+    text: textFromUnknown(payload ?? json),
+    images: imagesFromUnknown(payload ?? json),
+    model: currentModel,
+  }];
+}
+
 export const codexProvider: Provider = {
   id: 'codex',
   label: 'Codex',
@@ -328,6 +638,7 @@ export const codexProvider: Provider = {
   defaultCachePath,
   detect: (dir = defaultDataDir()) => existsSync(dir),
   scan: scanCodex,
+  readTranscript: readCodexTranscript,
 };
 
-export { scanCodex as _scanCodex };
+export { readCodexTranscript as _readCodexTranscript, scanCodex as _scanCodex };

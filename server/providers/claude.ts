@@ -26,7 +26,7 @@ import { existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { basename, join, sep } from 'node:path';
 import { homedir } from 'node:os';
-import type { Entry, SessionMeta } from '../types.ts';
+import type { Entry, SessionMeta, SessionTranscript, TranscriptEntry } from '../types.ts';
 import type {
   Provider,
   ProviderScanOptions,
@@ -42,6 +42,26 @@ import {
   saveCache,
   type FileInfo,
 } from './base.ts';
+import {
+  attachmentEntry,
+  booleanField,
+  claudeTokens,
+  countEntries,
+  imagesFromUnknown,
+  isCompactLike,
+  messageEntries,
+  metaFromRoot,
+  parseTimestampMs,
+  providerPath,
+  readJsonlObjects,
+  recordField,
+  roleFromString,
+  sortStreams,
+  streamKindFromPath,
+  streamLabel,
+  stringField,
+  textFromUnknown,
+} from './transcript.ts';
 
 const CACHE_VERSION = 3;
 const MAX_PROMPT_CHARS = 200;
@@ -569,6 +589,202 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
   };
 }
 
+async function readClaudeTranscript(
+  sessionId: string,
+  options: ProviderScanOptions = {},
+): Promise<SessionTranscript> {
+  const defaultDir = defaultDataDir();
+  const projectsDir = options.dataDir ?? defaultDir;
+  const cachePath = options.cachePath ?? defaultCachePath();
+  const concurrency = options.concurrency ?? 16;
+  const useCacheIndex =
+    options.useCache !== false && (options.cachePath !== undefined || projectsDir === defaultDir);
+  if (!existsSync(projectsDir)) return emptyClaudeTranscript(sessionId);
+
+  const files = await transcriptFiles(projectsDir, cachePath, sessionId, useCacheIndex);
+  const streams: SessionTranscript['streams'] = [];
+
+  await pMap(files, concurrency, async (path) => {
+    const entries: TranscriptEntry[] = [];
+    try {
+      await readJsonlObjects(path, (json, lineNo) => {
+        const lineSessionId = stringField(json, 'sessionId') ?? stringField(json, 'session_id');
+        if (lineSessionId !== sessionId) return;
+        entries.push(...claudeLineEntries(json, path, lineNo, streamKindFromPath(path) === 'subagent'));
+      });
+    } catch {
+      return;
+    }
+    if (entries.length === 0) return;
+
+    const rel = providerPath(projectsDir, path);
+    const allSidechain = entries.length > 0 && entries.every((entry) => entry.isSidechain);
+    const kind = streamKindFromPath(path) === 'subagent' || allSidechain ? 'subagent' : 'main';
+    streams.push({
+      id: rel,
+      label: streamLabel(rel, kind),
+      path: rel,
+      kind,
+      isSidechain: kind === 'subagent' || allSidechain,
+      entries,
+    });
+  });
+
+  sortStreams(streams);
+  return {
+    sessionId,
+    provider: 'cc',
+    streams,
+    sourceFiles: streams.length,
+    totalEntries: countEntries(streams),
+    missingRaw: streams.length === 0,
+  };
+}
+
+async function transcriptFiles(
+  projectsDir: string,
+  cachePath: string,
+  sessionId: string,
+  useCache: boolean,
+): Promise<string[]> {
+  if (useCache) {
+    const cache = await loadCache<ClaudeExtra>(cachePath, CACHE_VERSION);
+    const cachedMatches = Object.values(cache.files).filter((record) => record.sessionId === sessionId);
+    if (cachedMatches.length > 0) {
+      const paths = new Set<string>();
+      for (const record of cachedMatches) {
+        if (existsSync(record.path)) paths.add(record.path);
+      }
+      return [...paths];
+    }
+  }
+  return listJsonlFiles(projectsDir);
+}
+
+function emptyClaudeTranscript(sessionId: string): SessionTranscript {
+  return {
+    sessionId,
+    provider: 'cc',
+    streams: [],
+    sourceFiles: 0,
+    totalEntries: 0,
+    missingRaw: true,
+  };
+}
+
+function claudeLineEntries(
+  json: Record<string, unknown>,
+  path: string,
+  lineNo: number,
+  pathIsSubagent: boolean,
+): TranscriptEntry[] {
+  const type = stringField(json, 'type') ?? 'event';
+  const subtype = stringField(json, 'subtype');
+  const rawType = subtype ? `${type}:${subtype}` : type;
+  const timestamp = parseTimestampMs(json.timestamp);
+  const isSidechain = booleanField(json, 'isSidechain') ?? pathIsSubagent;
+  const compact = isCompactLike(json);
+  const meta = metaFromRoot(json);
+  const idBase = `${path}:${lineNo}`;
+  const message = recordField(json, 'message');
+
+  if (message) {
+    return messageEntries({
+      idBase,
+      rawType,
+      role: roleFromString(stringField(message, 'role') ?? type),
+      content: message.content,
+      timestamp: parseTimestampMs(json.timestamp, message.timestamp),
+      model: stringField(message, 'model'),
+      isSidechain,
+      isCompactSummary: compact,
+      tokens: claudeTokens(message),
+      meta,
+    });
+  }
+
+  if (type === 'system') {
+    const duration = numberFieldOrText(json, 'durationMs');
+    return [{
+      id: idBase,
+      role: 'system',
+      kind: compact ? 'summary' : 'event',
+      title: compact ? 'Context compaction' : subtype ? `System · ${subtype}` : 'System',
+      rawType,
+      isSidechain,
+      isCompactSummary: compact,
+      t: timestamp,
+      text: textFromUnknown(json.content) ?? duration,
+      images: imagesFromUnknown(json.content),
+      meta,
+    }];
+  }
+
+  if (type === 'attachment') {
+    return [attachmentEntry({
+      id: idBase,
+      rawType,
+      attachment: json.attachment,
+      timestamp,
+      isSidechain,
+      isCompactSummary: compact,
+      meta,
+    })];
+  }
+
+  if (type === 'progress') {
+    return [{
+      id: idBase,
+      role: 'event',
+      kind: 'progress',
+      title: 'Progress',
+      rawType,
+      isSidechain,
+      isCompactSummary: compact,
+      t: timestamp,
+      text: textFromUnknown(json.data),
+      images: imagesFromUnknown(json.data),
+      meta,
+    }];
+  }
+
+  return [{
+    id: idBase,
+    role: compact ? 'system' : 'event',
+    kind: compact ? 'summary' : 'event',
+    title: compact ? 'Context compaction' : eventTitle(type),
+    rawType,
+    isSidechain,
+    isCompactSummary: compact,
+    t: timestamp,
+    text: eventText(json, type),
+    images: imagesFromUnknown(json),
+    meta,
+  }];
+}
+
+function eventTitle(type: string): string {
+  if (type === 'last-prompt') return 'Last prompt marker';
+  if (type === 'ai-title') return 'AI title';
+  if (type === 'mode') return 'Mode';
+  if (type === 'permission-mode') return 'Permission mode';
+  if (type === 'bridge-session') return 'Bridge session';
+  return `Event · ${type}`;
+}
+
+function eventText(json: Record<string, unknown>, type: string): string | undefined {
+  if (type === 'last-prompt') return textFromUnknown(json.lastPrompt ?? json.leafUuid);
+  if (type === 'ai-title') return textFromUnknown(json.aiTitle);
+  if (type === 'mode') return textFromUnknown(json.mode);
+  if (type === 'permission-mode') return textFromUnknown(json.permissionMode);
+  return textFromUnknown(json);
+}
+
+function numberFieldOrText(json: Record<string, unknown>, key: string): string | undefined {
+  const value = json[key];
+  return typeof value === 'number' && Number.isFinite(value) ? `${Math.round(value)}ms` : undefined;
+}
+
 export const claudeProvider: Provider = {
   id: 'cc',
   label: 'Claude Code',
@@ -576,8 +792,9 @@ export const claudeProvider: Provider = {
   defaultCachePath,
   detect: (dir = defaultDataDir()) => existsSync(dir),
   scan: scanClaude,
+  readTranscript: readClaudeTranscript,
 };
 
 // Test-only export so the existing scanner.test.ts can drive the parser
 // directly without going through the Provider façade.
-export { scanClaude as _scanClaude };
+export { readClaudeTranscript as _readClaudeTranscript, scanClaude as _scanClaude };

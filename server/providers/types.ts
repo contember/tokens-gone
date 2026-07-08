@@ -13,7 +13,7 @@
  * dedup is needed because session ID spaces (UUIDs) don't collide.
  */
 
-import type { Entry, SessionMeta } from '../types.ts';
+import type { Entry, SessionMeta, SessionTranscript } from '../types.ts';
 
 /** Identifier baked into the `Entry.src` field. */
 export type ProviderId = 'cc' | 'codex' | 'opencode' | 'pi';
@@ -55,6 +55,8 @@ export interface Provider {
   detect(dataDir?: string): boolean;
   /** Run a full or incremental scan. Always returns — empty if nothing detected. */
   scan(opts?: ProviderScanOptions): Promise<ProviderScanResult>;
+  /** Lazily read and render one raw session transcript from disk. */
+  readTranscript?(sessionId: string, opts?: ProviderScanOptions): Promise<SessionTranscript>;
 }
 
 /**

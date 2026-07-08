@@ -20,6 +20,78 @@ export type Entry = {
 export type SessionMeta = {
   summary?: string;
   firstPrompt?: string;
+  parentSessionId?: string;
+  threadSource?: 'main' | 'subagent' | string;
+  agentNickname?: string;
+  agentRole?: string;
+};
+
+export type TranscriptProvider = 'cc' | 'codex' | 'opencode' | 'pi';
+
+export type TranscriptRole = 'user' | 'assistant' | 'system' | 'tool' | 'event';
+
+export type TranscriptEntryKind =
+  | 'message'
+  | 'tool_use'
+  | 'tool_result'
+  | 'thinking'
+  | 'summary'
+  | 'attachment'
+  | 'progress'
+  | 'event';
+
+export type TranscriptTokens = {
+  input?: number;
+  output?: number;
+  cacheWrite?: number;
+  cacheRead?: number;
+};
+
+export type TranscriptImage = {
+  mediaType: string;
+  data: string;
+  label?: string;
+};
+
+export type TranscriptField = {
+  label: string;
+  value: string;
+};
+
+export type TranscriptEntry = {
+  id: string;
+  role: TranscriptRole;
+  kind: TranscriptEntryKind;
+  title: string;
+  rawType: string;
+  isSidechain: boolean;
+  isCompactSummary: boolean;
+  t?: number;
+  text?: string;
+  model?: string;
+  toolName?: string;
+  tokens?: TranscriptTokens;
+  meta?: string[];
+  fields?: TranscriptField[];
+  images?: TranscriptImage[];
+};
+
+export type TranscriptStream = {
+  id: string;
+  label: string;
+  path: string;
+  kind: 'main' | 'subagent';
+  isSidechain: boolean;
+  entries: TranscriptEntry[];
+};
+
+export type SessionTranscript = {
+  sessionId: string;
+  provider: TranscriptProvider;
+  streams: TranscriptStream[];
+  sourceFiles: number;
+  totalEntries: number;
+  missingRaw: boolean;
 };
 
 export type ProviderStats = {

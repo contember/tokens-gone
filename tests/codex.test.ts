@@ -72,7 +72,13 @@ beforeAll(async () => {
   await writeFile(
     join(sub, 'rollout-1.jsonl'),
     [
-      sessionLine(),
+      sessionLine({
+        session_id: 'parent-session',
+        parent_thread_id: 'parent-session',
+        thread_source: 'subagent',
+        agent_nickname: 'Ada',
+        agent_role: 'worker',
+      }),
       turnContextLine('gpt-5.5'),
       userMsgLine('first prompt of the session'),
       // First call: 13875 input / 6528 cached / 144 output
@@ -147,6 +153,10 @@ describe('codex scanner', () => {
     const r = await scanCodex({ dataDir, cachePath: cache });
     const meta = r.sessionMeta['019dd89f-c5c5-7a92-be2d-39ad099e042a'];
     expect(meta?.firstPrompt).toBe('first prompt of the session');
+    expect(meta?.parentSessionId).toBe('parent-session');
+    expect(meta?.threadSource).toBe('subagent');
+    expect(meta?.agentNickname).toBe('Ada');
+    expect(meta?.agentRole).toBe('worker');
   });
 
   it('returns empty result when sessions dir does not exist', async () => {

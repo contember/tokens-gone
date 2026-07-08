@@ -97,13 +97,24 @@ describe('aggregate', () => {
       entry({ s: 'A', m: 'claude-sonnet-4-6', t: t1 }),
       entry({ s: 'A', m: 'claude-opus-4-7', t: t3 }),
       entry({ s: 'B', t: t1 }),
-    ]);
+    ], {
+      A: {
+        parentSessionId: 'parent-A',
+        threadSource: 'subagent',
+        agentNickname: 'Ada',
+        agentRole: 'worker',
+      },
+    });
     const a = result.find((s) => s.s === 'A');
     expect(a).toBeDefined();
     expect(a!.firstSeen).toBe(t1);
     expect(a!.lastSeen).toBe(t3);
     expect(a!.totals.count).toBe(3);
     expect(a!.models.length).toBe(2);
+    expect(a!.parentSessionId).toBe('parent-A');
+    expect(a!.threadSource).toBe('subagent');
+    expect(a!.agentNickname).toBe('Ada');
+    expect(a!.agentRole).toBe('worker');
   });
 
   it('dayKey and monthKey are local-time YYYY-MM-DD/YYYY-MM', () => {

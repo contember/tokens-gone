@@ -21,7 +21,7 @@ import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
-import type { Entry, SessionMeta } from '../types.ts';
+import type { Entry, SessionMeta, SessionTranscript, TranscriptEntry } from '../types.ts';
 import type {
   Provider,
   ProviderScanOptions,
@@ -37,6 +37,21 @@ import {
   saveCache,
   type FileInfo,
 } from './base.ts';
+import {
+  countEntries,
+  imagesFromUnknown,
+  messageEntries,
+  parseTimestampMs,
+  piTokens,
+  providerPath,
+  readJsonlObjects,
+  recordField,
+  roleFromString,
+  sortStreams,
+  streamLabel,
+  stringField,
+  textFromUnknown,
+} from './transcript.ts';
 
 const CACHE_VERSION = 1;
 const MAX_PROMPT_CHARS = 200;
@@ -458,6 +473,175 @@ async function scanPi(options: ProviderScanOptions = {}): Promise<ProviderScanRe
   };
 }
 
+async function readPiTranscript(
+  sessionId: string,
+  options: ProviderScanOptions = {},
+): Promise<SessionTranscript> {
+  const defaultDir = defaultDataDir();
+  const sessionsDir = options.dataDir ?? defaultDir;
+  const cachePath = options.cachePath ?? defaultCachePath();
+  const concurrency = options.concurrency ?? 16;
+  const useCacheIndex =
+    options.useCache !== false && (options.cachePath !== undefined || sessionsDir === defaultDir);
+  if (!existsSync(sessionsDir)) return emptyPiTranscript(sessionId);
+
+  const files = await transcriptFiles(sessionsDir, cachePath, sessionId, useCacheIndex);
+  const streams: SessionTranscript['streams'] = [];
+
+  await pMap(files, concurrency, async (path) => {
+    const entries: TranscriptEntry[] = [];
+    let fileSessionId: string | undefined;
+    try {
+      await readJsonlObjects(path, (json, lineNo) => {
+        const type = stringField(json, 'type');
+        if (type === 'session') {
+          const session = recordField(json, 'session') ?? json;
+          fileSessionId = stringField(session, 'id') ?? fileSessionId;
+        }
+        fileSessionId = stringField(json, 'sessionId') ?? fileSessionId;
+        entries.push(...piLineEntries(json, path, lineNo));
+      });
+    } catch {
+      return;
+    }
+    if (fileSessionId !== sessionId) return;
+
+    const rel = providerPath(sessionsDir, path);
+    streams.push({
+      id: rel,
+      label: streamLabel(rel, 'main'),
+      path: rel,
+      kind: 'main',
+      isSidechain: false,
+      entries,
+    });
+  });
+
+  sortStreams(streams);
+  return {
+    sessionId,
+    provider: 'pi',
+    streams,
+    sourceFiles: streams.length,
+    totalEntries: countEntries(streams),
+    missingRaw: streams.length === 0,
+  };
+}
+
+async function transcriptFiles(
+  sessionsDir: string,
+  cachePath: string,
+  sessionId: string,
+  useCache: boolean,
+): Promise<string[]> {
+  if (useCache) {
+    const cache = await loadCache<PiExtra>(cachePath, CACHE_VERSION);
+    const cachedMatches = Object.values(cache.files).filter((record) => record.sessionId === sessionId);
+    if (cachedMatches.length > 0) {
+      const paths = new Set<string>();
+      for (const record of cachedMatches) {
+        if (existsSync(record.path)) paths.add(record.path);
+      }
+      return [...paths];
+    }
+  }
+  return listJsonlFiles(sessionsDir);
+}
+
+function emptyPiTranscript(sessionId: string): SessionTranscript {
+  return {
+    sessionId,
+    provider: 'pi',
+    streams: [],
+    sourceFiles: 0,
+    totalEntries: 0,
+    missingRaw: true,
+  };
+}
+
+function piLineEntries(
+  json: Record<string, unknown>,
+  path: string,
+  lineNo: number,
+): TranscriptEntry[] {
+  const type = stringField(json, 'type') ?? 'event';
+  const timestamp = parseTimestampMs(json.timestamp);
+  const idBase = `${path}:${lineNo}`;
+
+  if (type === 'session') {
+    return [{
+      id: idBase,
+      role: 'system',
+      kind: 'event',
+      title: 'Session meta',
+      rawType: type,
+      isSidechain: false,
+      isCompactSummary: false,
+      t: timestamp,
+      text: textFromUnknown(recordField(json, 'session') ?? json),
+      images: imagesFromUnknown(recordField(json, 'session') ?? json),
+    }];
+  }
+
+  if (type === 'session_info') {
+    return [{
+      id: idBase,
+      role: 'system',
+      kind: 'summary',
+      title: 'Session info',
+      rawType: type,
+      isSidechain: false,
+      isCompactSummary: false,
+      t: timestamp,
+      text: stringField(json, 'name') ?? textFromUnknown(recordField(json, 'sessionInfo') ?? json),
+      images: imagesFromUnknown(recordField(json, 'sessionInfo') ?? json),
+    }];
+  }
+
+  if (type === 'message') {
+    const message = recordField(json, 'message');
+    if (!message) {
+      return [{
+        id: idBase,
+        role: 'event',
+        kind: 'event',
+        title: 'Message',
+        rawType: type,
+        isSidechain: false,
+        isCompactSummary: false,
+        t: timestamp,
+        text: textFromUnknown(json),
+        images: imagesFromUnknown(json),
+      }];
+    }
+    const model = stringField(message, 'responseModel') ?? stringField(message, 'model');
+    return messageEntries({
+      idBase,
+      rawType: type,
+      role: roleFromString(stringField(message, 'role')),
+      content: message.content,
+      timestamp: parseTimestampMs(json.timestamp, message.timestamp),
+      model,
+      isSidechain: false,
+      isCompactSummary: false,
+      tokens: piTokens(message),
+    });
+  }
+
+  return [{
+    id: idBase,
+    role: 'event',
+    kind: 'event',
+    title: `Event · ${type}`,
+    rawType: type,
+    isSidechain: false,
+    isCompactSummary: false,
+    t: timestamp,
+    text: textFromUnknown(json),
+    images: imagesFromUnknown(json),
+  }];
+}
+
 export const piProvider: Provider = {
   id: 'pi',
   label: 'Pi',
@@ -465,6 +649,7 @@ export const piProvider: Provider = {
   defaultCachePath,
   detect: (dir = defaultDataDir()) => existsSync(dir),
   scan: scanPi,
+  readTranscript: readPiTranscript,
 };
 
-export { scanPi as _scanPi };
+export { readPiTranscript as _readPiTranscript, scanPi as _scanPi };
