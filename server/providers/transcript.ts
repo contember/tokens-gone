@@ -235,6 +235,8 @@ export function messageEntries({
   content,
   timestamp,
   model,
+  usageKey,
+  fast,
   isSidechain,
   isCompactSummary,
   tokens,
@@ -246,6 +248,8 @@ export function messageEntries({
   content: unknown;
   timestamp?: number;
   model?: string;
+  usageKey?: string;
+  fast?: 0 | 1;
   isSidechain: boolean;
   isCompactSummary: boolean;
   tokens?: TranscriptTokens;
@@ -262,6 +266,8 @@ export function messageEntries({
         block,
         timestamp,
         model,
+        usageKey,
+        fast,
         isSidechain,
         isCompactSummary,
         tokens: blockIndex === content.length - 1 ? tokens : undefined,
@@ -287,6 +293,8 @@ export function messageEntries({
     text,
     images,
     model,
+    usageKey,
+    fast,
     tokens,
     meta,
   }];
@@ -299,6 +307,8 @@ function entryFromBlock({
   block,
   timestamp,
   model,
+  usageKey,
+  fast,
   isSidechain,
   isCompactSummary,
   tokens,
@@ -310,6 +320,8 @@ function entryFromBlock({
   block: unknown;
   timestamp?: number;
   model?: string;
+  usageKey?: string;
+  fast?: 0 | 1;
   isSidechain: boolean;
   isCompactSummary: boolean;
   tokens?: TranscriptTokens;
@@ -329,6 +341,8 @@ function entryFromBlock({
       t: timestamp,
       text,
       model,
+      usageKey,
+      fast,
       tokens,
       meta,
     };
@@ -349,6 +363,8 @@ function entryFromBlock({
       t: timestamp,
       text: textFromUnknown(input),
       model,
+      usageKey,
+      fast,
       toolName,
       tokens,
       meta,
@@ -371,6 +387,8 @@ function entryFromBlock({
       t: timestamp,
       text: textFromUnknown(content),
       model,
+      usageKey,
+      fast,
       tokens,
       meta,
       images: imagesFromUnknown(content),
@@ -389,6 +407,8 @@ function entryFromBlock({
       t: timestamp,
       text: stringField(block, 'thinking') ?? textFromUnknown(block),
       model,
+      usageKey,
+      fast,
       tokens,
       meta,
     };
@@ -407,6 +427,8 @@ function entryFromBlock({
       t: timestamp,
       text: image ? undefined : textFromUnknown(block),
       model,
+      usageKey,
+      fast,
       tokens,
       meta,
       images: image ? [image] : undefined,
@@ -428,6 +450,8 @@ function entryFromBlock({
     t: timestamp,
     text: textFromUnknown(block),
     model,
+    usageKey,
+    fast,
     tokens,
     meta,
     images: imagesFromUnknown(block),

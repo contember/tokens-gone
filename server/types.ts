@@ -102,6 +102,10 @@ export type TranscriptEntry = {
   t?: number;
   text?: string;
   model?: string;
+  /** Stable provider usage key used for cost deduplication in transcript stats. */
+  usageKey?: string;
+  /** Whether this usage ran in provider fast mode. */
+  fast?: 0 | 1;
   toolName?: string;
   tokens?: TranscriptTokens;
   meta?: string[];

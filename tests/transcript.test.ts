@@ -54,6 +54,7 @@ describe('transcript readers', () => {
             uuid: 'a-main',
             requestId: 'req-main',
             message: {
+              id: 'msg-main',
               role: 'assistant',
               model: 'claude-sonnet-4-6',
               content: [
@@ -65,6 +66,7 @@ describe('transcript readers', () => {
                 output_tokens: 5,
                 cache_creation_input_tokens: 1,
                 cache_read_input_tokens: 2,
+                speed: 'fast',
               },
             },
           }),
@@ -157,6 +159,9 @@ describe('transcript readers', () => {
       expect(progress?.images?.[0]?.data.startsWith('iVBOR')).toBe(true);
       expect(progress?.text?.includes('iVBOR')).toBe(false);
       expect(progress?.text?.includes('image/png omitted')).toBe(true);
+      const billed = entries.find((entry) => entry.tokens?.output === 5);
+      expect(billed?.usageKey).toBe('msg-main:req-main');
+      expect(billed?.fast).toBe(1);
 
       const missing = await _readClaudeTranscript('missing-session', {
         dataDir: projects,

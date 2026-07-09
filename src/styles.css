@@ -1561,10 +1561,42 @@ tbody tr.clickable {
   z-index: 1;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
+  gap: var(--s-3);
   padding: 0 0 var(--s-3);
   background: var(--ink-1);
   border-bottom: 1px solid var(--line-soft);
+}
+
+.transcript-source-meta {
+  flex-shrink: 0;
+}
+
+.transcript-stats-rail {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  min-width: 0;
+  color: var(--t-3);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.transcript-stats-rail span {
+  padding: 2px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-1);
+  background: var(--ink-0);
+  white-space: nowrap;
+}
+
+.transcript-stats-rail .cost {
+  color: var(--accent);
+  border-color: rgba(224, 120, 86, 0.2);
+  background: var(--accent-soft);
 }
 
 .transcript-layout {
@@ -1587,9 +1619,10 @@ tbody tr.clickable {
 
 .tree-node {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 2px;
   width: 100%;
-  min-height: 42px;
+  min-height: 46px;
   padding: var(--s-2);
   border: 1px solid transparent;
   border-radius: var(--r-1);
@@ -1628,6 +1661,8 @@ tbody tr.clickable {
 }
 
 .tree-node-label {
+  grid-column: 1;
+  grid-row: 1;
   min-width: 0;
   overflow: hidden;
   font-size: 12px;
@@ -1637,6 +1672,8 @@ tbody tr.clickable {
 }
 
 .tree-node-meta {
+  grid-column: 1 / -1;
+  grid-row: 2;
   min-width: 0;
   overflow: hidden;
   color: var(--t-3);
@@ -1645,6 +1682,16 @@ tbody tr.clickable {
   font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tree-node-cost {
+  grid-column: 2;
+  grid-row: 1;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
 }
 
 .transcript-stream {
@@ -1943,6 +1990,10 @@ tbody tr.clickable {
   .modal-tab-actions {
     width: 100%;
     justify-content: space-between;
+  }
+
+  .transcript-stats-rail {
+    justify-content: flex-start;
   }
 
   .log-entry {

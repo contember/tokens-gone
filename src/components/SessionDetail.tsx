@@ -23,6 +23,7 @@ type TranscriptTreeNode = {
   id: string;
   label: string;
   meta: string;
+  stats: TranscriptStats;
   depth: 0 | 1 | 2;
   disabled?: boolean;
 };
@@ -32,11 +33,23 @@ type TranscriptSlice = {
   entries: TranscriptEntry[];
   label?: string;
   meta?: string;
+  stats: TranscriptStats;
 };
 
 type TranscriptNavigation = {
   nodes: TranscriptTreeNode[];
   slicesByNode: Map<string, TranscriptSlice[]>;
+};
+
+type TranscriptStats = {
+  events: number;
+  calls: number;
+  input: number;
+  output: number;
+  cacheWrite: number;
+  cacheRead: number;
+  total: number;
+  cost: number;
 };
 
 /**
@@ -241,12 +254,14 @@ function buildTranscriptNavigation(data: SessionTranscript): TranscriptNavigatio
   const slicesByNode = new Map<string, TranscriptSlice[]>();
   const mainStreams = data.streams.filter((stream) => stream.kind === 'main');
   const subagentStreams = data.streams.filter((stream) => stream.kind === 'subagent');
+  const allStats = statsForStreams(data.streams);
 
   slicesByNode.set('all', slicesForStreams(data.streams));
   nodes.push({
     id: 'all',
     label: 'All transcript',
-    meta: `${fmtInt(data.totalEntries)} events`,
+    meta: statsMeta(allStats, { includeStreams: data.streams.length }),
+    stats: allStats,
     depth: 0,
   });
 
@@ -282,25 +297,28 @@ function addGroup({
   label: string;
   streams: TranscriptStream[];
 }) {
-  const eventCount = countStreamEntries(streams);
+  const stats = statsForStreams(streams);
   const compactCount = countCompactions(streams);
   slicesByNode.set(id, slicesForStreams(streams));
   nodes.push({
     id,
     label,
-    meta: branchMeta(streams.length, eventCount, compactCount),
+    meta: statsMeta(stats, { includeStreams: streams.length, compactions: compactCount }),
+    stats,
     depth: 0,
     disabled: streams.length === 0,
   });
 
   for (const stream of streams) {
     const streamId = `stream:${stream.id}`;
+    const streamStats = statsForEntries(stream.entries);
     const compactInStream = stream.entries.filter((entry) => entry.isCompactSummary).length;
-    slicesByNode.set(streamId, [{ stream, entries: stream.entries }]);
+    slicesByNode.set(streamId, [{ stream, entries: stream.entries, stats: streamStats }]);
     nodes.push({
       id: streamId,
       label: stream.kind === 'main' ? 'Session log' : subagentLabel(stream.label),
-      meta: branchMeta(1, stream.entries.length, compactInStream),
+      meta: statsMeta(streamStats, { compactions: compactInStream }),
+      stats: streamStats,
       depth: 1,
     });
 
@@ -310,11 +328,13 @@ function addGroup({
         entries: segment.entries,
         label: segment.label,
         meta: `${stream.path} · ${segment.meta}`,
+        stats: segment.stats,
       }]);
       nodes.push({
         id: segment.id,
         label: segment.label,
         meta: segment.meta,
+        stats: segment.stats,
         depth: 2,
       });
     }
@@ -322,13 +342,11 @@ function addGroup({
 }
 
 function slicesForStreams(streams: TranscriptStream[]): TranscriptSlice[] {
-  return streams.map((stream) => ({ stream, entries: stream.entries }));
-}
-
-function countStreamEntries(streams: TranscriptStream[]): number {
-  let count = 0;
-  for (const stream of streams) count += stream.entries.length;
-  return count;
+  return streams.map((stream) => ({
+    stream,
+    entries: stream.entries,
+    stats: statsForEntries(stream.entries),
+  }));
 }
 
 function countCompactions(streams: TranscriptStream[]): number {
@@ -341,18 +359,12 @@ function countCompactions(streams: TranscriptStream[]): number {
   return count;
 }
 
-function branchMeta(streams: number, events: number, compactions: number): string {
-  const parts = [`${fmtInt(events)} events`];
-  if (streams !== 1) parts.push(`${fmtInt(streams)} streams`);
-  if (compactions > 0) parts.push(`${fmtInt(compactions)} compactions`);
-  return parts.join(' · ');
-}
-
 type TranscriptSegment = {
   id: string;
   label: string;
   meta: string;
   entries: TranscriptEntry[];
+  stats: TranscriptStats;
 };
 
 function streamSegments(stream: TranscriptStream): TranscriptSegment[] {
@@ -390,19 +402,143 @@ function segmentFromRange(
   const entries = stream.entries.slice(start, end);
   const firstTime = entries[0]?.t;
   const lastTime = entries[entries.length - 1]?.t;
+  const stats = statsForEntries(entries);
   return {
     id: `segment:${stream.id}:${index}`,
     label,
-    meta: segmentMeta(entries.length, firstTime, lastTime),
+    meta: segmentMeta(stats, firstTime, lastTime),
     entries,
+    stats,
   };
 }
 
-function segmentMeta(events: number, firstTime: number | undefined, lastTime: number | undefined): string {
-  const parts = [`${fmtInt(events)} events`];
+function segmentMeta(
+  stats: TranscriptStats,
+  firstTime: number | undefined,
+  lastTime: number | undefined,
+): string {
+  const parts = [statsMeta(stats)];
   if (firstTime !== undefined && lastTime !== undefined) {
     parts.push(firstTime === lastTime ? fmtTime(firstTime) : `${fmtTime(firstTime)} to ${fmtTime(lastTime)}`);
   }
+  return parts.join(' · ');
+}
+
+function emptyTranscriptStats(): TranscriptStats {
+  return {
+    events: 0,
+    calls: 0,
+    input: 0,
+    output: 0,
+    cacheWrite: 0,
+    cacheRead: 0,
+    total: 0,
+    cost: 0,
+  };
+}
+
+function statsForStreams(streams: TranscriptStream[]): TranscriptStats {
+  return statsForEntryGroups(streams.map((stream) => stream.entries));
+}
+
+function statsForEntries(entries: TranscriptEntry[]): TranscriptStats {
+  return statsForEntryGroups([entries]);
+}
+
+function statsForEntryGroups(groups: TranscriptEntry[][]): TranscriptStats {
+  const stats = emptyTranscriptStats();
+  const keyed = new Map<string, TranscriptEntry>();
+  const structuralSeen = new Set<string>();
+  const keyless: TranscriptEntry[] = [];
+
+  for (const entries of groups) {
+    for (const entry of entries) {
+      stats.events++;
+      if (!hasBillableTokens(entry)) continue;
+
+      if (entry.usageKey) {
+        const existing = keyed.get(entry.usageKey);
+        if (!existing || outputTokens(entry) > outputTokens(existing)) {
+          keyed.set(entry.usageKey, entry);
+        }
+        continue;
+      }
+
+      const structuralKey = usageStructuralKey(entry);
+      if (structuralSeen.has(structuralKey)) continue;
+      structuralSeen.add(structuralKey);
+      keyless.push(entry);
+    }
+  }
+
+  keyed.forEach((entry) => addTranscriptUsage(stats, entry));
+  for (const entry of keyless) addTranscriptUsage(stats, entry);
+  return stats;
+}
+
+function hasBillableTokens(entry: TranscriptEntry): boolean {
+  return tokenTotal(entry) > 0;
+}
+
+function outputTokens(entry: TranscriptEntry): number {
+  return entry.tokens?.output ?? 0;
+}
+
+function tokenTotal(entry: TranscriptEntry): number {
+  const tokens = entry.tokens;
+  if (!tokens) return 0;
+  return (tokens.input ?? 0) + (tokens.output ?? 0) + (tokens.cacheWrite ?? 0) + (tokens.cacheRead ?? 0);
+}
+
+function usageStructuralKey(entry: TranscriptEntry): string {
+  const tokens = entry.tokens;
+  const input = tokens?.input ?? 0;
+  const output = tokens?.output ?? 0;
+  const cacheWrite = tokens?.cacheWrite ?? 0;
+  const cacheRead = tokens?.cacheRead ?? 0;
+  return `${entry.t ?? ''}|${entry.model ?? ''}|${input}|${output}|${cacheWrite}|${cacheRead}|${entry.fast ?? 0}`;
+}
+
+function addTranscriptUsage(stats: TranscriptStats, entry: TranscriptEntry): void {
+  if (!entry.tokens) return;
+  const input = entry.tokens.input ?? 0;
+  const output = entry.tokens.output ?? 0;
+  const cacheWrite = entry.tokens.cacheWrite ?? 0;
+  const cacheRead = entry.tokens.cacheRead ?? 0;
+  const total = input + output + cacheWrite + cacheRead;
+  if (total === 0) return;
+
+  stats.calls++;
+  stats.input += input;
+  stats.output += output;
+  stats.cacheWrite += cacheWrite;
+  stats.cacheRead += cacheRead;
+  stats.total += total;
+  if (entry.model) {
+    stats.cost += costForEntry({
+      m: entry.model,
+      i: input,
+      o: output,
+      cc: cacheWrite,
+      cr: cacheRead,
+      f: entry.fast ?? 0,
+    });
+  }
+}
+
+function statsMeta(
+  stats: TranscriptStats,
+  options: { includeStreams?: number; compactions?: number } = {},
+): string {
+  const parts = [`${fmtInt(stats.events)} events`];
+  if (options.includeStreams !== undefined && options.includeStreams !== 1) {
+    parts.push(`${fmtInt(options.includeStreams)} streams`);
+  }
+  if (options.compactions !== undefined && options.compactions > 0) {
+    parts.push(`${fmtInt(options.compactions)} compactions`);
+  }
+  if (stats.calls > 0) parts.push(`${fmtInt(stats.calls)} calls`);
+  if (stats.total > 0) parts.push(`${fmtTokens(stats.total)} tokens`);
   return parts.join(' · ');
 }
 
@@ -442,6 +578,8 @@ function TranscriptLog({
   const selectedSlices = navigation.slicesByNode.get(selectedNodeId)
     ?? navigation.slicesByNode.get('all')
     ?? [];
+  const selectedNode = navigation.nodes.find((node) => node.id === selectedNodeId)
+    ?? navigation.nodes[0];
   const subagentStreams = data.streams.filter((stream) => stream.kind === 'subagent');
 
   if (data.missingRaw) {
@@ -461,9 +599,12 @@ function TranscriptLog({
         </div>
       )}
       <div className="transcript-summary">
-        <span className="modal-tab-meta">
+        <span className="modal-tab-meta transcript-source-meta">
           {fmtInt(data.sourceFiles)} files · {fmtInt(subagentStreams.length)} subagent streams
         </span>
+        {selectedNode && (
+          <StatsRail label={selectedNode.label} stats={selectedNode.stats} />
+        )}
       </div>
 
       <div className="transcript-layout">
@@ -479,6 +620,9 @@ function TranscriptLog({
             >
               <span className="tree-node-label">{node.label}</span>
               <span className="tree-node-meta">{node.meta}</span>
+              {node.stats.calls > 0 && (
+                <span className="tree-node-cost">{fmtMoney(node.stats.cost)}</span>
+              )}
             </button>
           ))}
         </nav>
@@ -513,7 +657,7 @@ function TranscriptStreamView({ slice }: { slice: TranscriptSlice }) {
           </div>
           <div className="transcript-stream-path">{slice.meta ?? stream.path}</div>
         </div>
-        <span className="modal-tab-meta">{fmtInt(entries.length)} events</span>
+        <StatsRail stats={slice.stats} />
       </header>
       <div className="log-list">
         {entries.map((entry) => (
@@ -521,6 +665,17 @@ function TranscriptStreamView({ slice }: { slice: TranscriptSlice }) {
         ))}
       </div>
     </section>
+  );
+}
+
+function StatsRail({ label, stats }: { label?: string; stats: TranscriptStats }) {
+  return (
+    <div className="transcript-stats-rail" aria-label={label ? `${label} stats` : 'Transcript stats'}>
+      <span>{fmtInt(stats.events)} events</span>
+      <span>{fmtInt(stats.calls)} calls</span>
+      <span>{fmtTokens(stats.total)} tokens</span>
+      <span className="cost">{fmtMoney(stats.cost)}</span>
+    </div>
   );
 }
 

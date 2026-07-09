@@ -689,6 +689,9 @@ function claudeLineEntries(
   const message = recordField(json, 'message');
 
   if (message) {
+    const usage = recordField(message, 'usage');
+    const messageId = stringField(message, 'id');
+    const requestId = stringField(json, 'requestId');
     return messageEntries({
       idBase,
       rawType,
@@ -696,6 +699,8 @@ function claudeLineEntries(
       content: message.content,
       timestamp: parseTimestampMs(json.timestamp, message.timestamp),
       model: stringField(message, 'model'),
+      usageKey: messageId && requestId ? `${messageId}:${requestId}` : undefined,
+      fast: usage && stringField(usage, 'speed') === 'fast' ? 1 : 0,
       isSidechain,
       isCompactSummary: compact,
       tokens: claudeTokens(message),
