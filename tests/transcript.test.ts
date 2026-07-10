@@ -188,6 +188,11 @@ describe('transcript readers', () => {
             payload: { id: 'codex-session', cwd: '/home/me/projects/tokens-gone' },
           }),
           JSON.stringify({
+            timestamp: '2026-04-29T09:45:45.778Z',
+            type: 'session_meta',
+            payload: { id: 'codex-parent-session', cwd: '/home/me/projects/tokens-gone' },
+          }),
+          JSON.stringify({
             timestamp: '2026-04-29T09:45:45.779Z',
             type: 'turn_context',
             payload: { model: 'gpt-5.5', effort: 'medium' },

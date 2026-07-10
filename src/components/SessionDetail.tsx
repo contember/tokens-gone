@@ -585,8 +585,8 @@ function TranscriptLog({
   if (data.missingRaw) {
     return (
       <div className="modal-log-state">
-        Raw session JSONL is no longer on disk. The cached cost metadata still exists,
-        but Claude Code may have swept the transcript via <code>cleanupPeriodDays</code>.
+        Raw session JSONL could not be found on disk. Cached cost metadata still exists,
+        but the transcript is unavailable.
       </div>
     );
   }

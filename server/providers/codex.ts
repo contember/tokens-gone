@@ -431,7 +431,8 @@ async function readCodexTranscript(
         const type = stringField(json, 'type');
         const payload = recordField(json, 'payload');
         if (type === 'session_meta' && payload) {
-          fileSessionId = stringField(payload, 'id') ?? fileSessionId;
+          // Subagent rollouts embed the parent metadata after their own.
+          fileSessionId ??= stringField(payload, 'id');
         }
         if (type === 'turn_context' && payload) {
           currentModel = stringField(payload, 'model') ?? currentModel;
