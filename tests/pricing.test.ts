@@ -107,6 +107,22 @@ describe('pricing', () => {
     expect(getPricing('gpt-5.5-pro')?.output).toBe(180 / 1_000_000);
   });
 
+  it('prices the gpt-5.6 family including cache writes and reads', () => {
+    for (const [model, input, output] of [
+      ['gpt-5.6-sol', 5, 30],
+      ['gpt-5.6-terra', 2.5, 15],
+      ['gpt-5.6-luna', 1, 6],
+    ] as const) {
+      const p = getPricing(model);
+      expect(p?.input).toBe(input / 1_000_000);
+      expect(p?.output).toBe(output / 1_000_000);
+      expect(p?.cacheWrite).toBe((input * 1.25) / 1_000_000);
+      expect(p?.cacheRead).toBe((input * 0.1) / 1_000_000);
+    }
+
+    expect(getPricing('openai/gpt-5.6-sol-20260626')?.input).toBe(5 / 1_000_000);
+  });
+
   it('gpt-5 models have no fast multiplier or tiered pricing', () => {
     for (const model of ['gpt-5', 'gpt-5.5', 'gpt-5.2-codex']) {
       const p = getPricing(model);
@@ -194,6 +210,9 @@ describe('pricing', () => {
       'gpt-5.2-codex',
       'gpt-5.5',
       'gpt-5.5-pro',
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+      'gpt-5.6-luna',
     ]) {
       const server = costForRequest(tokens, model, false);
       const client = costForEntry({

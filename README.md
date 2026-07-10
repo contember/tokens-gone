@@ -38,7 +38,7 @@ with thousands of session files.
 LiteLLM pricing every run. tokens-gone is the same idea but:
 
 - Cold scan: ~8s for 1.7GB of JSONL (5000+ files); warm: ~700ms.
-- Hardcoded Anthropic pricing — no network requests, ever.
+- Hardcoded Anthropic and OpenAI pricing — no network requests, ever.
 - Browser UI with click-to-filter on charts, models, projects, sessions.
 
 ## How it works
@@ -46,9 +46,9 @@ LiteLLM pricing every run. tokens-gone is the same idea but:
 - `server/providers/*` walk provider-specific JSONL directories, parse logs
   streamingly, and cache parsed entries on disk keyed by `(path, size, mtime)`.
   Unchanged files are reused verbatim; appended files are tail-parsed.
-- `server/pricing.ts` resolves Anthropic Claude pricing by model name
-  substring (matches `claude-opus-4-7`, `anthropic/claude-sonnet-4-6`, etc.),
-  with tiered pricing for Sonnet >200k and a 6× fast-mode multiplier for Opus.
+- `server/pricing.ts` resolves Anthropic Claude and OpenAI GPT pricing by model
+  name, including provider-prefixed and date-suffixed model IDs. It accounts
+  for provider-specific caching, tiered pricing, and fast-mode rates.
 - `server/server.ts` exposes `/api/data` (gzipped) and `/api/refresh`.
 - The SPA loads all entries once and re-aggregates client-side on every
   filter change — fast enough for ~300k entries.

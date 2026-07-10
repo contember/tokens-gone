@@ -75,8 +75,7 @@ const HAIKU: ModelPricing = {
 };
 
 // OpenAI GPT-5 family — see server/pricing.ts for rationale on per-model
-// rates. Cached input rate is 10% of base across the line; cacheWrite is
-// set equal to cacheRead since OpenAI has no separate write concept.
+// rates. GPT-5.6+ has a separate 1.25x cache-write rate.
 const GPT5_BASE: ModelPricing = {
   input: 1.25 / M,
   output: 10 / M,
@@ -131,8 +130,29 @@ const GPT55_PRO: ModelPricing = {
   cacheWrite: 3 / M,
   cacheRead: 3 / M,
 };
+const GPT56_SOL: ModelPricing = {
+  input: 5 / M,
+  output: 30 / M,
+  cacheWrite: 6.25 / M,
+  cacheRead: 0.5 / M,
+};
+const GPT56_TERRA: ModelPricing = {
+  input: 2.5 / M,
+  output: 15 / M,
+  cacheWrite: 3.125 / M,
+  cacheRead: 0.25 / M,
+};
+const GPT56_LUNA: ModelPricing = {
+  input: 1 / M,
+  output: 6 / M,
+  cacheWrite: 1.25 / M,
+  cacheRead: 0.1 / M,
+};
 
 function getOpenAIPricing(m: string): ModelPricing | null {
+  if (m.includes('gpt-5.6-sol')) return GPT56_SOL;
+  if (m.includes('gpt-5.6-terra')) return GPT56_TERRA;
+  if (m.includes('gpt-5.6-luna')) return GPT56_LUNA;
   if (m.includes('gpt-5.5-pro')) return GPT55_PRO;
   if (m.includes('gpt-5.5')) return GPT55;
   if (m.includes('gpt-5.4-mini')) return GPT54_MINI;

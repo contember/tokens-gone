@@ -3,9 +3,8 @@
  * (USD per million tokens).
  *
  * Sources cross-checked against Anthropic's pricing page, OpenAI's pricing
- * page, and several third-party rate trackers on 2026-05-11. OpenAI bumped
- * rates across the 5.x line in March/April 2026 — the codex variants
- * (gpt-5.2-codex in particular) cost more than base gpt-5.
+ * page, and several third-party rate trackers on 2026-05-11. GPT-5.6 rates
+ * were added from OpenAI's preview announcement on 2026-07-10.
  *
  * Notable gotchas:
  *  - Fable 5 is the new flagship, 2x the price of Opus ($10/$50 per M).
@@ -17,8 +16,8 @@
  *  - Opus 4.6+ has a "fast" service tier billed at 6× the standard rate;
  *    the JSONL records this as `usage.speed === "fast"`.
  *  - OpenAI cached-input rate is consistently 10% of base input rate.
- *    There's no cache-write concept on the OpenAI side, so cacheWrite is
- *    set equal to cacheRead defensively (Codex entries always have cc=0).
+ *    GPT-5.6+ cache writes cost 1.25x the uncached input rate; older GPT
+ *    models have cacheWrite set equal to cacheRead defensively.
  *  - GPT-5.1 and GPT-5.1-codex price the same as base GPT-5 ($1.25/$10).
  *
  * Cache-write cost (Claude side) is the 5-minute ephemeral cache rate.
@@ -100,9 +99,8 @@ const HAIKU: ModelPricing = {
 
 // --- OpenAI GPT-5 family ---
 // Cached input is 10% of base input across the line (OpenAI's standard
-// discount). cacheWrite is set = cacheRead because OpenAI has no separate
-// write concept; if a future provider stuffed something into `cc` we'd
-// still bill at the cached rate rather than free.
+// discount). Before GPT-5.6 there was no separate cache-write price, so
+// those models use the cached-input rate defensively if `cc` is populated.
 
 const GPT5_BASE: ModelPricing = {
   // gpt-5, gpt-5.1, gpt-5.1-codex, bare gpt-5-codex
@@ -169,6 +167,27 @@ const GPT55_PRO: ModelPricing = {
   cacheRead: 3 / M,
 };
 
+const GPT56_SOL: ModelPricing = {
+  input: 5 / M,
+  output: 30 / M,
+  cacheWrite: 6.25 / M,
+  cacheRead: 0.5 / M,
+};
+
+const GPT56_TERRA: ModelPricing = {
+  input: 2.5 / M,
+  output: 15 / M,
+  cacheWrite: 3.125 / M,
+  cacheRead: 0.25 / M,
+};
+
+const GPT56_LUNA: ModelPricing = {
+  input: 1 / M,
+  output: 6 / M,
+  cacheWrite: 1.25 / M,
+  cacheRead: 0.1 / M,
+};
+
 /**
  * Match an OpenAI GPT-5 family model name to its pricing.
  * Order matters: most specific substrings first so e.g. `gpt-5.5-pro`
@@ -176,6 +195,9 @@ const GPT55_PRO: ModelPricing = {
  * mistaken for `gpt-5-codex`.
  */
 function getOpenAIPricing(m: string): ModelPricing | null {
+  if (m.includes('gpt-5.6-sol')) return GPT56_SOL;
+  if (m.includes('gpt-5.6-terra')) return GPT56_TERRA;
+  if (m.includes('gpt-5.6-luna')) return GPT56_LUNA;
   if (m.includes('gpt-5.5-pro')) return GPT55_PRO;
   if (m.includes('gpt-5.5')) return GPT55;
   if (m.includes('gpt-5.4-mini')) return GPT54_MINI;
