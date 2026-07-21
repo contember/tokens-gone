@@ -42,6 +42,18 @@ function userMsgLine(message: string, ts = '2026-04-29T09:45:45.780Z'): string {
   });
 }
 
+function taskStartedLine(turnId: string, ts: string): string {
+  return JSON.stringify({
+    timestamp: ts,
+    type: 'event_msg',
+    payload: {
+      type: 'task_started',
+      turn_id: turnId,
+      started_at: Math.floor(Date.parse(ts) / 1000),
+    },
+  });
+}
+
 function tokenCountLine(
   last: { input_tokens: number; cached_input_tokens: number; output_tokens: number; reasoning_output_tokens?: number },
   total: { input_tokens: number; cached_input_tokens: number; output_tokens: number; reasoning_output_tokens?: number } = last,
@@ -193,5 +205,114 @@ describe('codex scanner', () => {
     expect(r.entries[2]!.o).toBe(50);
     // Only the appended file should have parsed lines.
     expect(r.stats.cachedFiles).toBe(r.stats.files - 1);
+  });
+
+  it('skips inherited usage copied into a forked session', async () => {
+    const forkDir = join(dataDir, '2026', '07', '18', 'fork-cold');
+    await mkdir(forkDir, { recursive: true });
+    const childId = '019f76ec-4fab-7010-9762-aba3c8859556';
+    const parentId = '019f5b60-d986-7e62-8e3f-7ddff31b77a3';
+
+    await writeFile(
+      join(forkDir, 'rollout-fork.jsonl'),
+      [
+        sessionLine({
+          id: childId,
+          session_id: parentId,
+          parent_thread_id: parentId,
+          forked_from_id: parentId,
+          timestamp: '2026-07-18T20:30:26.254Z',
+          thread_source: 'subagent',
+          agent_nickname: 'Lorentz',
+        }),
+        sessionLine({
+          id: parentId,
+          session_id: parentId,
+          timestamp: '2026-07-13T12:08:21.679Z',
+          thread_source: 'user',
+        }),
+        turnContextLine('gpt-5.6-sol', '2026-07-18T20:30:26.971Z'),
+        userMsgLine('inherited parent prompt', '2026-07-18T20:30:26.971Z'),
+        tokenCountLine(
+          { input_tokens: 1_800_000_000, cached_input_tokens: 1_750_000_000, output_tokens: 2_000_000 },
+          undefined,
+          '2026-07-18T20:30:27.457Z',
+        ),
+        taskStartedLine('019f76ec-54de-74a1-89c5-1a788201d0f3', '2026-07-18T20:30:27.563Z'),
+        turnContextLine('gpt-5.6-sol', '2026-07-18T20:30:29.040Z'),
+        userMsgLine('child task', '2026-07-18T20:30:29.051Z'),
+        tokenCountLine(
+          { input_tokens: 1_000, cached_input_tokens: 400, output_tokens: 50 },
+          undefined,
+          '2026-07-18T20:30:36.210Z',
+        ),
+      ].join('\n'),
+    );
+
+    const r = await scanCodex({ dataDir, cachePath: cache });
+    const entries = r.entries.filter((e) => e.s === childId);
+    expect(entries.length).toBe(1);
+    expect(entries[0]!.i).toBe(600);
+    expect(entries[0]!.cr).toBe(400);
+    expect(entries[0]!.o).toBe(50);
+    expect(entries[0]!.m).toBe('gpt-5.6-sol');
+    expect(r.sessionMeta[childId]).toEqual({
+      firstPrompt: 'child task',
+      parentSessionId: parentId,
+      threadSource: 'subagent',
+      agentNickname: 'Lorentz',
+    });
+  });
+
+  it('keeps fork history pending across incremental scans', async () => {
+    const forkDir = join(dataDir, '2026', '07', '18', 'fork-incremental');
+    await mkdir(forkDir, { recursive: true });
+    const path = join(forkDir, 'rollout-fork.jsonl');
+    const childId = '019f76ec-cb8d-7620-a734-52704fafcd1d';
+    const parentId = '019f5b60-d986-7e62-8e3f-7ddff31b77a3';
+
+    await writeFile(
+      path,
+      [
+        sessionLine({
+          id: childId,
+          session_id: parentId,
+          parent_thread_id: parentId,
+          forked_from_id: parentId,
+          timestamp: '2026-07-18T20:30:58.012Z',
+          thread_source: 'subagent',
+        }),
+        sessionLine({ id: parentId, session_id: parentId, thread_source: 'user' }),
+        turnContextLine('gpt-5.6-sol', '2026-07-18T20:30:58.100Z'),
+        tokenCountLine(
+          { input_tokens: 1_800_000_000, cached_input_tokens: 1_750_000_000, output_tokens: 2_000_000 },
+          undefined,
+          '2026-07-18T20:30:58.200Z',
+        ),
+      ].join('\n'),
+    );
+
+    const beforeStart = await scanCodex({ dataDir, cachePath: cache });
+    expect(beforeStart.entries.some((e) => e.s === childId)).toBe(false);
+
+    await appendFile(
+      path,
+      '\n' + [
+        taskStartedLine('019f76ec-d500-7000-8000-000000000001', '2026-07-18T20:30:59.282Z'),
+        turnContextLine('gpt-5.6-sol', '2026-07-18T20:31:00.000Z'),
+        tokenCountLine(
+          { input_tokens: 2_000, cached_input_tokens: 1_000, output_tokens: 100 },
+          undefined,
+          '2026-07-18T20:31:05.000Z',
+        ),
+      ].join('\n'),
+    );
+
+    const afterStart = await scanCodex({ dataDir, cachePath: cache });
+    const entries = afterStart.entries.filter((e) => e.s === childId);
+    expect(entries.length).toBe(1);
+    expect(entries[0]!.i).toBe(1_000);
+    expect(entries[0]!.cr).toBe(1_000);
+    expect(entries[0]!.o).toBe(100);
   });
 });

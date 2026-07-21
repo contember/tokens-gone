@@ -59,8 +59,10 @@ import {
   textFromUnknown,
 } from './transcript.ts';
 
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 const MAX_PROMPT_CHARS = 200;
+
+type ForkHistoryState = 'pending' | 'skipped';
 
 type CodexExtra = {
   sessionId?: string;
@@ -69,6 +71,7 @@ type CodexExtra = {
   threadSource?: string;
   agentNickname?: string;
   agentRole?: string;
+  forkHistoryState?: ForkHistoryState;
 };
 
 function codexSessionMeta(record: CodexExtra): SessionMeta | undefined {
@@ -123,7 +126,23 @@ type ParsedFile = {
   threadSource?: string;
   agentNickname?: string;
   agentRole?: string;
+  forkHistoryState?: ForkHistoryState;
 };
+
+// Forked rollouts replay parent events before the child's first newer UUIDv7 turn.
+function uuidV7Timestamp(id: unknown): number | undefined {
+  if (typeof id !== 'string') return undefined;
+  const match = /^([0-9a-f]{8})-([0-9a-f]{4})-7[0-9a-f]{3}-/i.exec(id);
+  if (!match) return undefined;
+  const value = Number.parseInt(`${match[1]}${match[2]}`, 16);
+  return Number.isSafeInteger(value) ? value : undefined;
+}
+
+function isOwnForkTask(sessionId: string | undefined, turnId: unknown): boolean {
+  const sessionStarted = uuidV7Timestamp(sessionId);
+  const turnStarted = uuidV7Timestamp(turnId);
+  return sessionStarted !== undefined && turnStarted !== undefined && turnStarted >= sessionStarted;
+}
 
 /**
  * Streaming parse of a single codex rollout JSONL.
@@ -144,6 +163,7 @@ async function parseFile(
     threadSource?: string;
     agentNickname?: string;
     agentRole?: string;
+    forkHistoryState?: ForkHistoryState;
   },
 ): Promise<ParsedFile> {
   let lines = 0;
@@ -156,6 +176,7 @@ async function parseFile(
   let threadSource = primed?.threadSource;
   let agentNickname = primed?.agentNickname;
   let agentRole = primed?.agentRole;
+  let forkHistoryState = primed?.forkHistoryState;
 
   const stream = createReadStream(path, { encoding: 'utf-8', start: fromOffset });
   const rl = createInterface({ input: stream, crlfDelay: Infinity });
@@ -170,6 +191,7 @@ async function parseFile(
     const interesting =
       line.indexOf('"session_meta"') !== -1 ||
       line.indexOf('"turn_context"') !== -1 ||
+      line.indexOf('"task_started"') !== -1 ||
       line.indexOf('"token_count"') !== -1 ||
       line.indexOf('"user_message"') !== -1;
     if (!interesting) continue;
@@ -186,7 +208,11 @@ async function parseFile(
     if (!payload) continue;
 
     if (type === 'session_meta') {
-      if (!sessionId && typeof payload.id === 'string') sessionId = payload.id;
+      const isFirstMeta = !sessionId;
+      if (isFirstMeta && typeof payload.id === 'string') sessionId = payload.id;
+      const isOwnMeta = typeof payload.id === 'string' && payload.id === sessionId;
+      if (!isOwnMeta) continue;
+
       if (typeof payload.thread_source === 'string') threadSource = payload.thread_source;
       if (typeof payload.agent_nickname === 'string') agentNickname = payload.agent_nickname;
       if (typeof payload.agent_role === 'string') agentRole = payload.agent_role;
@@ -197,6 +223,10 @@ async function parseFile(
             ? payload.session_id
             : undefined;
       if (parent && parent !== payload.id) parentSessionId = parent;
+      if (isFirstMeta && typeof payload.forked_from_id === 'string') {
+        parentSessionId ??= payload.forked_from_id;
+        forkHistoryState = 'pending';
+      }
       if (!projectName && typeof payload.cwd === 'string') {
         projectName = projectNameFromCwd(payload.cwd);
       }
@@ -204,6 +234,7 @@ async function parseFile(
     }
 
     if (type === 'turn_context') {
+      if (forkHistoryState === 'pending') continue;
       // The model can change mid-session (rare, but possible if the user
       // switches models). We track the most recent one and stamp it onto
       // subsequent token_count entries.
@@ -218,6 +249,13 @@ async function parseFile(
 
     if (type === 'event_msg') {
       const pType: string | undefined = payload.type;
+
+      if (pType === 'task_started' && forkHistoryState === 'pending') {
+        if (isOwnForkTask(sessionId, payload.turn_id)) forkHistoryState = 'skipped';
+        continue;
+      }
+
+      if (forkHistoryState === 'pending') continue;
 
       if (pType === 'user_message' && !firstPrompt) {
         const msg = payload.message;
@@ -261,7 +299,17 @@ async function parseFile(
     }
   }
 
-  return { entries, lines, sessionId, firstPrompt, parentSessionId, threadSource, agentNickname, agentRole };
+  return {
+    entries,
+    lines,
+    sessionId,
+    firstPrompt,
+    parentSessionId,
+    threadSource,
+    agentNickname,
+    agentRole,
+    forkHistoryState,
+  };
 }
 
 async function scanCodex(options: ProviderScanOptions = {}): Promise<ProviderScanResult> {
@@ -329,6 +377,7 @@ async function scanCodex(options: ProviderScanOptions = {}): Promise<ProviderSca
           threadSource: state.cached.threadSource,
           agentNickname: state.cached.agentNickname,
           agentRole: state.cached.agentRole,
+          forkHistoryState: state.cached.forkHistoryState,
           currentModel: lastCachedEntry?.m,
         });
         parsedLines += parsed.lines;
@@ -350,6 +399,7 @@ async function scanCodex(options: ProviderScanOptions = {}): Promise<ProviderSca
           threadSource: threadSourceMerged,
           agentNickname: agentNicknameMerged,
           agentRole: agentRoleMerged,
+          forkHistoryState: parsed.forkHistoryState,
         };
         newFiles[info.path] = record;
         for (const e of merged) allEntries.push(e);
@@ -374,6 +424,7 @@ async function scanCodex(options: ProviderScanOptions = {}): Promise<ProviderSca
         threadSource: parsed.threadSource,
         agentNickname: parsed.agentNickname,
         agentRole: parsed.agentRole,
+        forkHistoryState: parsed.forkHistoryState,
       };
       newFiles[info.path] = record;
       for (const e of parsed.entries) allEntries.push(e);
