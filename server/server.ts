@@ -17,6 +17,7 @@ import { extname, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { PROVIDERS, type Provider, type ProviderScanStats } from './providers/index.ts';
+import { markTranscriptUsageOwnership } from './providers/transcript.ts';
 import { loadPromptDays, type PromptDay } from './promptHistory.ts';
 import { renderUsageSummary, summarizeUsage } from './summary.ts';
 import type { Entry, SessionMeta } from './types.ts';
@@ -244,6 +245,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         return;
       }
       const transcript = await provider.readTranscript(sessionId);
+      markTranscriptUsageOwnership(transcript, cached!.entries);
       sendJson(req, res, transcript);
       return;
     }

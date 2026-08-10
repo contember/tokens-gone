@@ -455,6 +455,7 @@ function statsForEntryGroups(groups: TranscriptEntry[][]): TranscriptStats {
     for (const entry of entries) {
       stats.events++;
       if (!hasBillableTokens(entry)) continue;
+      if (entry.counted === false) continue;
 
       if (entry.usageKey) {
         const existing = keyed.get(entry.usageKey);

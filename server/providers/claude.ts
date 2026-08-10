@@ -63,7 +63,7 @@ import {
   textFromUnknown,
 } from './transcript.ts';
 
-const CACHE_VERSION = 3;
+const CACHE_VERSION = 4;
 const MAX_PROMPT_CHARS = 200;
 
 type ClaudeExtra = {
@@ -79,6 +79,8 @@ type ClaudeExtra = {
    * correctly without re-parsing.
    */
   cwd?: string;
+  /** Claude's mirror classification, such as `bg` for background copies. */
+  sessionKind?: string;
 };
 
 function defaultDataDir(): string {
@@ -220,12 +222,14 @@ async function parseFile(
   sessionId?: string;
   firstPrompt?: string;
   cwd?: string;
+  sessionKind?: string;
 }> {
   let lines = 0;
   const entries: Entry[] = [];
   let sessionId: string | undefined;
   let firstPrompt: string | undefined;
   let cwd: string | undefined;
+  let sessionKind: string | undefined;
   const stream = createReadStream(path, { encoding: 'utf-8', start: fromOffset });
   const rl = createInterface({ input: stream, crlfDelay: Infinity });
   for await (const line of rl) {
@@ -242,7 +246,8 @@ async function parseFile(
       line.indexOf('"type":"user"') !== -1 &&
       line.indexOf('"isMeta":true') === -1;
     const maybeCwd = !cwd && line.indexOf('"cwd"') !== -1;
-    if (!hasUsage && !maybePrompt && !maybeCwd) continue;
+    const maybeSessionKind = !sessionKind && line.indexOf('"sessionKind"') !== -1;
+    if (!hasUsage && !maybePrompt && !maybeCwd && !maybeSessionKind) continue;
 
     let json: any;
     try {
@@ -253,6 +258,7 @@ async function parseFile(
 
     if (!sessionId && typeof json.sessionId === 'string') sessionId = json.sessionId;
     if (!cwd && typeof json.cwd === 'string' && json.cwd) cwd = json.cwd;
+    if (!sessionKind && typeof json.sessionKind === 'string') sessionKind = json.sessionKind;
 
     if (!firstPrompt && json.type === 'user' && !json.isMeta && !json.isSidechain) {
       const text = extractUserText(json?.message?.content);
@@ -287,7 +293,7 @@ async function parseFile(
       // JSON payload) smaller for the common case.
     });
   }
-  return { entries, lines, sessionId, firstPrompt, cwd };
+  return { entries, lines, sessionId, firstPrompt, cwd, sessionKind };
 }
 
 /**
@@ -389,6 +395,7 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
   let cachedFiles = 0;
   let parsedLines = 0;
   const allEntries: Entry[] = [];
+  const entryMirrorPriority = new WeakMap<Entry, number>();
   const newFiles: Record<string, FileCacheRecord<ClaudeExtra>> = {};
 
   const fileStats = await pMap(files, concurrency, async (path) => {
@@ -430,6 +437,7 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
           sessionId: state.cached.sessionId ?? parsed.sessionId,
           firstPrompt: state.cached.firstPrompt ?? parsed.firstPrompt,
           cwd: state.cached.cwd ?? parsed.cwd,
+          sessionKind: state.cached.sessionKind ?? parsed.sessionKind,
         };
         newFiles[info.path] = record;
         return;
@@ -447,6 +455,7 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
         sessionId: parsed.sessionId,
         firstPrompt: parsed.firstPrompt,
         cwd: parsed.cwd,
+        sessionKind: parsed.sessionKind,
       };
       newFiles[info.path] = record;
     },
@@ -521,6 +530,7 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
     for (const e of record.entries) {
       e.p = projectName;
       allEntries.push(e);
+      entryMirrorPriority.set(e, record.sessionKind === 'bg' ? 1 : 0);
     }
   }
 
@@ -563,7 +573,11 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
     const e = allEntries[i]!;
     if (e.h) {
       const existing = byHash.get(e.h);
-      if (!existing || e.o > existing.o) byHash.set(e.h, e);
+      const preferCanonicalSession =
+        existing !== undefined &&
+        e.o === existing.o &&
+        (entryMirrorPriority.get(e) ?? 0) < (entryMirrorPriority.get(existing) ?? 0);
+      if (!existing || e.o > existing.o || preferCanonicalSession) byHash.set(e.h, e);
       continue;
     }
     const k = `${e.t}|${e.s}|${e.i}|${e.o}|${e.cc}|${e.cr}`;

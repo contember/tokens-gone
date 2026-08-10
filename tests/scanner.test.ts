@@ -238,6 +238,27 @@ describe('scanner', () => {
     await rm(subDir, { recursive: true });
   });
 
+  it('attributes mirrored calls to the foreground session', async () => {
+    const mirrorDir = join(projects, '-home-user-projects-mirror');
+    await mkdir(mirrorDir, { recursive: true });
+    const background = makeLineFixed('msg-mirror', 'req-mirror', {
+      sessionId: 'sess-background',
+      sessionKind: 'bg',
+    });
+    const foreground = makeLineFixed('msg-mirror', 'req-mirror', {
+      sessionId: 'sess-foreground',
+    });
+    await writeFile(join(mirrorDir, 'a-background.jsonl'), background);
+    await writeFile(join(mirrorDir, 'z-foreground.jsonl'), foreground);
+
+    const r = await scan({ dataDir: projects, cachePath: cache });
+    const mirrored = r.entries.filter((e) => e.h === 'msg-mirror:req-mirror');
+    expect(mirrored).toHaveLength(1);
+    expect(mirrored[0]!.s).toBe('sess-foreground');
+
+    await rm(mirrorDir, { recursive: true });
+  });
+
   it('preserves cached entries when source jsonl is deleted from disk', async () => {
     // Simulates Claude Code's cleanupPeriodDays sweep wiping a session file
     // that we already have in cache. The entries must survive the next scan.

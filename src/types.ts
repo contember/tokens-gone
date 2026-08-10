@@ -71,6 +71,8 @@ export type TranscriptEntry = {
   model?: string;
   /** Stable provider usage key used for cost deduplication in transcript stats. */
   usageKey?: string;
+  /** Whether this usage belongs to the selected session's aggregate totals. */
+  counted?: boolean;
   /** Whether this usage ran in provider fast mode. */
   fast?: 0 | 1;
   toolName?: string;

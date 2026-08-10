@@ -2,6 +2,8 @@ import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { basename, relative, sep } from 'node:path';
 import type {
+  Entry,
+  SessionTranscript,
   TranscriptEntry,
   TranscriptEntryKind,
   TranscriptField,
@@ -10,6 +12,36 @@ import type {
   TranscriptStream,
   TranscriptTokens,
 } from '../types.ts';
+
+/**
+ * Reconcile raw transcript usage with the globally deduplicated session
+ * entries. Raw logs can mirror one billed call into multiple sessions.
+ */
+export function markTranscriptUsageOwnership(
+  transcript: SessionTranscript,
+  aggregateEntries: Entry[],
+): void {
+  const ownedKeys = new Set<string>();
+  for (const entry of aggregateEntries) {
+    if (entry.s === transcript.sessionId && entry.h) ownedKeys.add(entry.h);
+  }
+
+  const winners = new Map<string, TranscriptEntry>();
+  for (const stream of transcript.streams) {
+    for (const entry of stream.entries) {
+      if (!entry.usageKey || !entry.tokens) continue;
+      entry.counted = false;
+      const existing = winners.get(entry.usageKey);
+      if (!existing || (entry.tokens.output ?? 0) > (existing.tokens?.output ?? 0)) {
+        winners.set(entry.usageKey, entry);
+      }
+    }
+  }
+
+  for (const [usageKey, entry] of winners) {
+    if (ownedKeys.has(usageKey)) entry.counted = true;
+  }
+}
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

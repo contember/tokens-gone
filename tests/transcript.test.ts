@@ -5,8 +5,92 @@ import { tmpdir } from 'node:os';
 import { _readClaudeTranscript } from '../server/providers/claude';
 import { _readCodexTranscript } from '../server/providers/codex';
 import { _readPiTranscript } from '../server/providers/pi';
+import { markTranscriptUsageOwnership } from '../server/providers/transcript';
+import type { Entry, SessionTranscript } from '../server/types';
 
 describe('transcript readers', () => {
+  it('marks only the aggregate-owned copy of mirrored transcript usage', () => {
+    const transcript: SessionTranscript = {
+      sessionId: 'sess-owned',
+      provider: 'cc',
+      sourceFiles: 2,
+      totalEntries: 3,
+      missingRaw: false,
+      streams: [
+        {
+          id: 'main',
+          label: 'Main',
+          path: 'main.jsonl',
+          kind: 'main',
+          isSidechain: false,
+          entries: [{
+            id: 'main:1',
+            role: 'assistant',
+            kind: 'message',
+            title: 'Assistant',
+            rawType: 'assistant',
+            isSidechain: false,
+            isCompactSummary: false,
+            model: 'claude-sonnet-4-6',
+            usageKey: 'msg-owned:req-owned',
+            tokens: { input: 10, output: 20 },
+          }],
+        },
+        {
+          id: 'subagent',
+          label: 'Subagent',
+          path: 'subagents/agent.jsonl',
+          kind: 'subagent',
+          isSidechain: true,
+          entries: [
+            {
+              id: 'subagent:1',
+              role: 'assistant',
+              kind: 'message',
+              title: 'Assistant',
+              rawType: 'assistant',
+              isSidechain: true,
+              isCompactSummary: false,
+              model: 'claude-sonnet-4-6',
+              usageKey: 'msg-owned:req-owned',
+              tokens: { input: 10, output: 20 },
+            },
+            {
+              id: 'subagent:2',
+              role: 'assistant',
+              kind: 'message',
+              title: 'Assistant',
+              rawType: 'assistant',
+              isSidechain: true,
+              isCompactSummary: false,
+              model: 'claude-sonnet-4-6',
+              usageKey: 'msg-other:req-other',
+              tokens: { input: 5, output: 6 },
+            },
+          ],
+        },
+      ],
+    };
+    const aggregateEntries: Entry[] = [{
+      t: 1,
+      p: 'project',
+      s: 'sess-owned',
+      m: 'claude-sonnet-4-6',
+      i: 10,
+      o: 20,
+      cc: 0,
+      cr: 0,
+      f: 0,
+      h: 'msg-owned:req-owned',
+    }];
+
+    markTranscriptUsageOwnership(transcript, aggregateEntries);
+
+    expect(transcript.streams[0]!.entries[0]!.counted).toBe(true);
+    expect(transcript.streams[1]!.entries[0]!.counted).toBe(false);
+    expect(transcript.streams[1]!.entries[1]!.counted).toBe(false);
+  });
+
   it('reads Claude main log, compaction markers, and subagent streams', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'tokens-gone-transcript-'));
     try {
