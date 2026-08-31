@@ -1,3 +1,4 @@
+/** One request, as served by `/api/session-entries`. */
 export type Entry = {
   t: number;
   p: string;
@@ -15,6 +16,36 @@ export type Entry = {
   crc?: number;
   /** Source of the entry. Missing means Claude Code. */
   src?: 'cc' | 'codex' | 'opencode' | 'pi';
+};
+
+/**
+ * What `/api/data` ships: every request in a 5-minute bucket that shares
+ * session + model + fast-mode + source, collapsed into one row. Costs are
+ * summed from per-request pricing on the server, so never re-derive them
+ * from the token counts — tiering applies per request.
+ */
+export type UsageRow = {
+  /** First request in the bucket. */
+  t: number;
+  /** Last request in the bucket. */
+  te: number;
+  /** Requests collapsed into this row. */
+  n: number;
+  p: string;
+  s: string;
+  m: string;
+  f: 0 | 1;
+  src?: Harness;
+  /** Summed tokens. */
+  i: number;
+  o: number;
+  cc: number;
+  cr: number;
+  /** Summed USD, split by token type. */
+  ci: number;
+  co: number;
+  cwc: number;
+  crc: number;
 };
 
 export type SessionMeta = {
@@ -132,7 +163,9 @@ export type PromptDay = {
 };
 
 export type ApiData = {
-  entries: Entry[];
+  entries: UsageRow[];
+  /** Requests behind `entries` — rows collapse several of them. */
+  requests: number;
   sessionMeta: Record<string, SessionMeta>;
   /** Aggregated across all providers. Same shape every provider reports. */
   stats: ProviderStats;

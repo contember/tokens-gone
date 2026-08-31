@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
-import type { Entry } from '../types';
+import type { UsageRow } from '../types';
 import { dayKey, hourBucket, monthKey, weekBucket } from '../aggregate';
-import { costForEntry } from '../pricing';
+import { rowCost } from '../pricing';
 import { BarChart, type ChartPoint } from './Chart';
 import { fmtMoney } from '../format';
 import { FAMILIES, OTHER, familyOf, type Family } from '../families';
@@ -13,7 +13,7 @@ type Granularity = 'hour' | 'day' | 'week' | 'month';
  * based on the visible range: narrow ranges default to hourly, wide ones
  * to monthly. Stacking is by model family (see families.ts).
  */
-export function Timeline({ entries, rangeFrom, rangeTo }: { entries: Entry[]; rangeFrom: number | null; rangeTo: number | null }) {
+export function Timeline({ entries, rangeFrom, rangeTo }: { entries: UsageRow[]; rangeFrom: number | null; rangeTo: number | null }) {
   const defaultGran = useMemo<Granularity>(() => {
     if (entries.length === 0) return 'day';
     const first = rangeFrom ?? entries[0]!.t;
@@ -51,7 +51,7 @@ export function Timeline({ entries, rangeFrom, rangeTo }: { entries: Entry[]; ra
         buckets.set(key, b);
       }
       const famKey = familyOf(e.m).key;
-      b.byModel.set(famKey, (b.byModel.get(famKey) ?? 0) + costForEntry(e));
+      b.byModel.set(famKey, (b.byModel.get(famKey) ?? 0) + rowCost(e));
     }
 
     const toPoint = (b: { full: string; label: string; byModel: Map<string, number> }): ChartPoint => {

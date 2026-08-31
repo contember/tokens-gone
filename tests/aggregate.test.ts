@@ -10,11 +10,16 @@ import {
   totals,
   weekBucket,
 } from '../src/aggregate';
-import type { Entry, Filters, PromptDay } from '../src/types';
+import { costBreakdown } from '../src/pricing';
+import type { Filters, PromptDay, UsageRow } from '../src/types';
 
-function entry(over: Partial<Entry> = {}): Entry {
-  return {
-    t: Date.parse('2026-04-15T10:00:00Z'),
+/** One row standing for a single request, priced the way the server does. */
+function entry(over: Partial<UsageRow> = {}): UsageRow {
+  const t = over.t ?? Date.parse('2026-04-15T10:00:00Z');
+  const base = {
+    t,
+    te: t,
+    n: 1,
     p: 'foo',
     s: 'sess-1',
     m: 'claude-sonnet-4-6',
@@ -22,9 +27,11 @@ function entry(over: Partial<Entry> = {}): Entry {
     o: 50,
     cc: 1000,
     cr: 5000,
-    f: 0,
+    f: 0 as const,
     ...over,
   };
+  const c = costBreakdown(base);
+  return { ci: c.input, co: c.output, cwc: c.cwrite, crc: c.cread, ...base };
 }
 
 const EMPTY: Filters = { from: null, to: null, projects: new Set(), models: new Set(), harnesses: new Set() };
@@ -175,7 +182,7 @@ describe('aggregate', () => {
     it('does NOT flag a day as missing when its prompts belong to sessions found elsewhere in entries', () => {
       // Session spans midnight: prompt logged at 23:55 Apr 14, the
       // assistant API call happens at 00:10 Apr 15 — same sessionId.
-      const sampleEntries: Entry[] = [
+      const sampleEntries: UsageRow[] = [
         entry({ t: t('2026-04-15T00:10:00'), s: 'spans-midnight', p: 'foo' }),
       ];
       const prompts: PromptDay[] = [
@@ -198,7 +205,7 @@ describe('aggregate', () => {
 
     it('estimates lost cost only for prompts whose sessionId is not in entries', () => {
       const sampleDate = '2026-04-15';
-      const sampleEntries: Entry[] = [];
+      const sampleEntries: UsageRow[] = [];
       for (let i = 0; i < 100; i++) {
         sampleEntries.push(
           entry({
@@ -242,7 +249,7 @@ describe('aggregate', () => {
     it('counts only orphan prompts on a partially-lost day', () => {
       // Day has 10 prompts: 3 are on a known session (covered) and 7 are
       // on lost sessions → should report 7 missing, not 10.
-      const sampleEntries: Entry[] = [
+      const sampleEntries: UsageRow[] = [
         entry({ t: t('2026-04-15T10:00:00'), s: 'known-A', p: 'foo' }),
         entry({ t: t('2026-04-15T11:00:00'), s: 'known-A', p: 'foo' }),
       ];
@@ -267,7 +274,7 @@ describe('aggregate', () => {
     });
 
     it('falls back to global rate when a project lacks enough samples', () => {
-      const sampleEntries: Entry[] = [];
+      const sampleEntries: UsageRow[] = [];
       for (let i = 0; i < 50; i++) {
         sampleEntries.push(
           entry({

@@ -5,6 +5,10 @@
  * /api/refresh re-runs the scan (incremental — usually <1s once the disk
  * cache is warm) and returns updated stats.
  *
+ * Per-request entries stay server-side; `/api/data` ships them rolled up
+ * (see ./rollup.ts) and `/api/session-entries` serves the raw ones for a
+ * single session.
+ *
  * The server is provider-agnostic: it iterates `PROVIDERS`, asks each one
  * to scan, concatenates entries, and re-sorts. Adding a new harness only
  * touches `./providers/`.
@@ -27,8 +31,9 @@ import {
   printScanResult,
   startSpinner,
 } from './startupLog.ts';
+import { rollupEntries } from './rollup.ts';
 import { renderUsageSummary, summarizeUsage } from './summary.ts';
-import type { Entry, SessionMeta } from './types.ts';
+import type { Entry, SessionMeta, UsageRow } from './types.ts';
 
 type ProviderInfo = {
   id: Provider['id'];
@@ -40,7 +45,10 @@ type ProviderInfo = {
 };
 
 type Cache = {
+  /** Per-request, kept server-side only — see `rollupEntries`. */
   entries: Entry[];
+  /** What `/api/data` ships. */
+  rows: UsageRow[];
   sessionMeta: Record<string, SessionMeta>;
   stats: ProviderScanStats;
   providers: ProviderInfo[];
@@ -115,7 +123,7 @@ const EMPTY_STATS: ProviderScanStats = {
 // have headroom and the first run doesn't truncate just-recent activity.
 const PROMPT_HISTORY_WINDOW_DAYS = 400;
 
-async function runScan(): Promise<Omit<Cache, 'generatedAt'>> {
+async function runScan(): Promise<Omit<Cache, 'generatedAt' | 'rows'>> {
   const promptFromMs = Date.now() - PROMPT_HISTORY_WINDOW_DAYS * 86400000;
   const [providerResults, promptActivity] = await Promise.all([
     scanProviders(),
@@ -129,7 +137,9 @@ async function runScan(): Promise<Omit<Cache, 'generatedAt'>> {
  * still appear in the result with empty stats so the UI can show "Codex:
  * not detected" without special-casing.
  */
-async function scanProviders(): Promise<Omit<Cache, 'generatedAt' | 'promptActivity'>> {
+async function scanProviders(): Promise<
+  Omit<Cache, 'generatedAt' | 'promptActivity' | 'rows'>
+> {
   const results = await Promise.all(
     PROVIDERS.map(async (p) => {
       const dataDir = p.defaultDataDir();
@@ -201,7 +211,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     if (inFlight) return inFlight;
     inFlight = (async () => {
       const result = await runScan();
-      cached = { ...result, generatedAt: Date.now() };
+      cached = { ...result, rows: rollupEntries(result.entries), generatedAt: Date.now() };
       inFlight = null;
     })();
     return inFlight;
@@ -236,6 +246,30 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       return;
     }
 
+    // Per-request rows for one session. `/api/data` only ships rolled-up
+    // buckets, so the session detail's call list comes from here.
+    if (pathname === '/api/session-entries') {
+      if (req.method !== 'GET') {
+        sendJson(req, res, { error: 'Method Not Allowed' }, 405);
+        return;
+      }
+      const sessionId = url.searchParams.get('session');
+      if (!sessionId) {
+        sendJson(req, res, { error: 'Missing session query parameter' }, 400);
+        return;
+      }
+      if (!cached) await refresh();
+      const out: Omit<Entry, 'h'>[] = [];
+      for (const e of cached!.entries) {
+        if (e.s !== sessionId) continue;
+        const { h: _h, ...rest } = e;
+        out.push(rest);
+      }
+      out.sort((a, b) => a.t - b.t);
+      sendJson(req, res, { entries: out });
+      return;
+    }
+
     if (pathname === '/api/session-transcript') {
       if (req.method !== 'GET') {
         sendJson(req, res, { error: 'Method Not Allowed' }, 405);
@@ -260,11 +294,9 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
 
     if (pathname === '/api/data') {
       if (!cached) await refresh();
-      // Strip the internal hash field — the client doesn't need it and it
-      // would add ~7MB to the JSON payload.
-      const clientEntries = cached!.entries.map(({ h: _h, ...rest }) => rest);
       sendJson(req, res, {
-        entries: clientEntries,
+        entries: cached!.rows,
+        requests: cached!.entries.length,
         sessionMeta: cached!.sessionMeta,
         stats: cached!.stats,
         providers: cached!.providers,

@@ -12,6 +12,12 @@ import { fmtInt, fmtMoney, fmtTokens, modelClass, modelShort } from '../format';
 
 type DetailView = 'log' | 'calls';
 
+type CallsState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'loaded'; entries: Entry[] }
+  | { status: 'error'; message: string };
+
 type TranscriptState =
   | { status: 'idle' }
   | { status: 'loading' }
@@ -53,20 +59,19 @@ type TranscriptStats = {
 };
 
 /**
- * Per-session drill-down. The cost-call table is still sourced from the
- * already-loaded aggregate entries, while the full transcript is fetched
- * lazily from raw JSONL only when this modal opens.
+ * Per-session drill-down. Both tabs load lazily: `/api/data` only carries
+ * rolled-up rows, so the per-call table fetches this session's raw entries
+ * and the log fetches the raw JSONL transcript.
  */
 export function SessionDetail({
   session,
-  allEntries,
   onClose,
 }: {
   session: SessionInfo;
-  allEntries: Entry[];
   onClose: () => void;
 }) {
   const [view, setView] = useState<DetailView>('log');
+  const [callsState, setCallsState] = useState<CallsState>({ status: 'idle' });
   const [transcriptState, setTranscriptState] = useState<TranscriptState>({ status: 'idle' });
   const [transcriptRefreshKey, setTranscriptRefreshKey] = useState(0);
 
@@ -80,6 +85,7 @@ export function SessionDetail({
 
   useEffect(() => {
     setView('log');
+    setCallsState({ status: 'idle' });
     setTranscriptState({ status: 'idle' });
     setTranscriptRefreshKey(0);
   }, [session.s]);
@@ -121,15 +127,24 @@ export function SessionDetail({
     return () => ac.abort();
   }, [session.s, view, transcriptRefreshKey]);
 
-  const entries = useMemo(() => {
-    const out: Entry[] = [];
-    for (let i = 0; i < allEntries.length; i++) {
-      const e = allEntries[i]!;
-      if (e.s === session.s) out.push(e);
-    }
-    out.sort((a, b) => a.t - b.t);
-    return out;
-  }, [allEntries, session.s]);
+  useEffect(() => {
+    if (view !== 'calls') return;
+
+    const ac = new AbortController();
+    setCallsState({ status: 'loading' });
+    fetch(`/api/session-entries?session=${encodeURIComponent(session.s)}`, { signal: ac.signal })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        const body: { entries: Entry[] } = await r.json();
+        setCallsState({ status: 'loaded', entries: body.entries });
+      })
+      .catch((e) => {
+        if (ac.signal.aborted) return;
+        setCallsState({ status: 'error', message: e instanceof Error ? e.message : String(e) });
+      });
+
+    return () => ac.abort();
+  }, [session.s, view]);
 
   const label = session.title || session.firstPrompt || '(untitled session)';
   const transcript = transcriptData(transcriptState);
@@ -228,7 +243,7 @@ export function SessionDetail({
           {view === 'log' ? (
             <TranscriptLog state={transcriptState} />
           ) : (
-            <CallsTable entries={entries} />
+            <CallsTable state={callsState} />
           )}
         </div>
       </div>
@@ -763,7 +778,10 @@ function EntryImages({ entry }: { entry: TranscriptEntry }) {
   );
 }
 
-function CallsTable({ entries }: { entries: Entry[] }) {
+function CallsTable({ state }: { state: CallsState }) {
+  if (state.status === 'error') return <div className="empty">{state.message}</div>;
+  if (state.status !== 'loaded') return <div className="empty">Loading calls…</div>;
+  const entries = state.entries;
   return (
     <table className="modal-table">
       <thead>

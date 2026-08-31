@@ -298,3 +298,47 @@ export function costForRequest(
     tieredCost(tokens.cacheRead, p.cacheRead, p.tiered?.cacheRead);
   return fast && p.fastMultiplier ? cost * p.fastMultiplier : cost;
 }
+
+export type CostBreakdown = {
+  input: number;
+  output: number;
+  cacheWrite: number;
+  cacheRead: number;
+};
+
+/**
+ * Per-request cost split by token type. Tiering and the fast multiplier
+ * apply per request, so this must be called before any roll-up — pricing
+ * the summed tokens of several requests overcharges past the 200k tier.
+ * Mirrors `costBreakdown` in src/pricing.ts; tests/pricing.test.ts pins it.
+ */
+export function costBreakdownForEntry(e: {
+  m: string;
+  i: number;
+  o: number;
+  cc: number;
+  cr: number;
+  f: 0 | 1;
+  ci?: number;
+  co?: number;
+  cwc?: number;
+  crc?: number;
+}): CostBreakdown {
+  if (e.ci !== undefined || e.co !== undefined || e.cwc !== undefined || e.crc !== undefined) {
+    return {
+      input: e.ci ?? 0,
+      output: e.co ?? 0,
+      cacheWrite: e.cwc ?? 0,
+      cacheRead: e.crc ?? 0,
+    };
+  }
+  const p = getPricing(e.m);
+  if (!p) return { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+  const mult = e.f && p.fastMultiplier ? p.fastMultiplier : 1;
+  return {
+    input: tieredCost(e.i, p.input, p.tiered?.input) * mult,
+    output: tieredCost(e.o, p.output, p.tiered?.output) * mult,
+    cacheWrite: tieredCost(e.cc, p.cacheWrite, p.tiered?.cacheWrite) * mult,
+    cacheRead: tieredCost(e.cr, p.cacheRead, p.tiered?.cacheRead) * mult,
+  };
+}

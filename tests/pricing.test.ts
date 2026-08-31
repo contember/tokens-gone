@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import { costForRequest, getPricing } from '../server/pricing';
-import { costForEntry } from '../src/pricing';
+import { costBreakdownForEntry, costForRequest, getPricing } from '../server/pricing';
+import { costBreakdown, costForEntry } from '../src/pricing';
 
 describe('pricing', () => {
   it('fable 5 / mythos 5 share the flagship tier ($10/$50 per M), no fast/tier', () => {
@@ -241,5 +241,22 @@ describe('pricing', () => {
       crc: 0.004,
     });
     expect(cost).toBeCloseTo(0.037, 12);
+  });
+
+  it('server and client agree on the per-type cost split', () => {
+    // The server rolls up entries using its own breakdown; the client
+    // reprices raw per-request entries with its copy. They must not drift.
+    for (const model of ['claude-fable-5', 'claude-opus-4-7', 'claude-sonnet-4-5', 'gpt-5.6-sol']) {
+      for (const f of [0, 1] as const) {
+        // Input above 200k exercises the tier on sonnet 4.5.
+        const e = { m: model, i: 250_000, o: 3_000, cc: 40_000, cr: 900_000, f };
+        const server = costBreakdownForEntry(e);
+        const client = costBreakdown(e);
+        expect(client.input).toBeCloseTo(server.input, 12);
+        expect(client.output).toBeCloseTo(server.output, 12);
+        expect(client.cwrite).toBeCloseTo(server.cacheWrite, 12);
+        expect(client.cread).toBeCloseTo(server.cacheRead, 12);
+      }
+    }
   });
 });

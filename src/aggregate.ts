@@ -1,13 +1,16 @@
 /**
- * Pure functions that filter and aggregate entries. The SPA recomputes
- * these on every render under realistic dataset sizes (~100k entries),
- * so they must be allocation-light: avoid Array.filter/map chains, prefer
- * single-pass for-loops, and reuse the input shape where possible.
+ * Pure functions that filter and aggregate the rolled-up rows from
+ * `/api/data`. The SPA recomputes these on every render, so they must be
+ * allocation-light: avoid Array.filter/map chains, prefer single-pass
+ * for-loops, and reuse the input shape where possible.
+ *
+ * A row stands for `n` requests, so anything counting requests adds `n`,
+ * never 1.
  */
 
-import type { Entry, Filters, PromptDay, SessionMeta } from './types.ts';
+import type { UsageRow, Filters, PromptDay, SessionMeta } from './types.ts';
 import { entryHarness } from './types.ts';
-import { costForEntry } from './pricing.ts';
+import { rowCost } from './pricing.ts';
 
 export type Totals = {
   count: number;
@@ -31,17 +34,17 @@ export function emptyTotals(): Totals {
   };
 }
 
-function addEntry(t: Totals, e: Entry): void {
-  t.count++;
+function addEntry(t: Totals, e: UsageRow): void {
+  t.count += e.n;
   t.input += e.i;
   t.output += e.o;
   t.cacheWrite += e.cc;
   t.cacheRead += e.cr;
   t.total += e.i + e.o + e.cc + e.cr;
-  t.cost += costForEntry(e);
+  t.cost += rowCost(e);
 }
 
-export function matches(e: Entry, f: Filters): boolean {
+export function matches(e: UsageRow, f: Filters): boolean {
   if (f.from !== null && e.t < f.from) return false;
   if (f.to !== null && e.t >= f.to) return false;
   if (f.projects.size > 0 && !f.projects.has(e.p)) return false;
@@ -50,8 +53,8 @@ export function matches(e: Entry, f: Filters): boolean {
   return true;
 }
 
-export function applyFilters(entries: Entry[], f: Filters): Entry[] {
-  const out: Entry[] = [];
+export function applyFilters(entries: UsageRow[], f: Filters): UsageRow[] {
+  const out: UsageRow[] = [];
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i]!;
     if (matches(e, f)) out.push(e);
@@ -59,7 +62,7 @@ export function applyFilters(entries: Entry[], f: Filters): Entry[] {
   return out;
 }
 
-export function totals(entries: Entry[]): Totals {
+export function totals(entries: UsageRow[]): Totals {
   const t = emptyTotals();
   for (let i = 0; i < entries.length; i++) addEntry(t, entries[i]!);
   return t;
@@ -70,8 +73,8 @@ export function totals(entries: Entry[]): Totals {
  * The generic shape avoids a dozen near-identical helpers.
  */
 export function groupBy(
-  entries: Entry[],
-  keyFn: (e: Entry) => string,
+  entries: UsageRow[],
+  keyFn: (e: UsageRow) => string,
 ): { key: string; totals: Totals }[] {
   const map = new Map<string, Totals>();
   for (let i = 0; i < entries.length; i++) {
@@ -252,7 +255,7 @@ export type MissingActivity = {
  * We bias toward "rough and labeled as such" over "precise and silent".
  */
 export function estimateMissingActivity(
-  entries: Entry[],
+  entries: UsageRow[],
   promptDays: PromptDay[],
   fromMs: number,
   toMs: number,
@@ -271,7 +274,7 @@ export function estimateMissingActivity(
     if (e.s) knownSessions.add(e.s);
     if (e.t < fromDay || e.t >= toDay + 86400000) continue;
     const date = dayKey(e.t);
-    const c = costForEntry(e);
+    const c = rowCost(e);
     if (c === 0) continue;
     const k = `${date}|${e.p}`;
     costByDateProject.set(k, (costByDateProject.get(k) ?? 0) + c);
@@ -420,7 +423,7 @@ export type DayStat = {
  * Output is dense — days with zero activity are included so the heatmap
  * has empty cells in their proper spots.
  */
-export function daily(entries: Entry[], from?: number, to?: number): DayStat[] {
+export function daily(entries: UsageRow[], from?: number, to?: number): DayStat[] {
   if (entries.length === 0) return [];
   const map = new Map<string, DayStat>();
   for (let i = 0; i < entries.length; i++) {
@@ -440,9 +443,9 @@ export function daily(entries: Entry[], from?: number, to?: number): DayStat[] {
       };
       map.set(k, d);
     }
-    const c = costForEntry(e);
+    const c = rowCost(e);
     d.cost += c;
-    d.count++;
+    d.count += e.n;
     d.total += e.i + e.o + e.cc + e.cr;
     d.byModel.set(e.m, (d.byModel.get(e.m) ?? 0) + c);
   }
@@ -551,18 +554,18 @@ export function activityStats(days: DayStat[]): ActivityStats {
  * 24-bucket distribution of cost by hour of local day. Useful for showing
  * "when do you actually work" — Claude's own activity report excludes this.
  */
-export function hourlyDistribution(entries: Entry[]): number[] {
+export function hourlyDistribution(entries: UsageRow[]): number[] {
   const buckets = new Array<number>(24).fill(0);
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i]!;
     const h = new Date(e.t).getHours();
-    buckets[h]! += costForEntry(e);
+    buckets[h]! += rowCost(e);
   }
   return buckets;
 }
 
 /** Most recent activity timestamp across entries (for burn-rate calc). */
-export function recentBurn(entries: Entry[], windowMs = 60 * 60 * 1000): {
+export function recentBurn(entries: UsageRow[], windowMs = 60 * 60 * 1000): {
   cost: number;
   reqs: number;
   perHour: number;
@@ -576,15 +579,15 @@ export function recentBurn(entries: Entry[], windowMs = 60 * 60 * 1000): {
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i]!;
     if (e.t < cutoff) break;
-    cost += costForEntry(e);
-    reqs++;
+    cost += rowCost(e);
+    reqs += e.n;
   }
   return { cost, reqs, perHour: cost * (3600_000 / windowMs) };
 }
 
 export type SessionInfo = {
   s: string;
-  src?: Entry['src'];
+  src?: UsageRow['src'];
   project: string;
   firstSeen: number;
   lastSeen: number;
@@ -605,7 +608,7 @@ export type SessionInfo = {
  * fields (first/last seen, model list).
  */
 export function sessions(
-  entries: Entry[],
+  entries: UsageRow[],
   meta: Record<string, SessionMeta> = {},
 ): SessionInfo[] {
   const map = new Map<string, SessionInfo>();
@@ -619,7 +622,7 @@ export function sessions(
         src: e.src,
         project: e.p,
         firstSeen: e.t,
-        lastSeen: e.t,
+        lastSeen: e.te,
         totals: emptyTotals(),
         models: [],
         title: m?.summary,
@@ -632,7 +635,7 @@ export function sessions(
       map.set(e.s, s);
     }
     if (e.t < s.firstSeen) s.firstSeen = e.t;
-    if (e.t > s.lastSeen) s.lastSeen = e.t;
+    if (e.te > s.lastSeen) s.lastSeen = e.te;
     if (!s.models.includes(e.m)) s.models.push(e.m);
     addEntry(s.totals, e);
   }

@@ -1,10 +1,14 @@
 /**
- * Client-side pricing — duplicated from server so the SPA can recompute
- * costs locally on every filter change without an extra round-trip. The
- * two must agree; tests/pricing.test.ts pins that invariant.
+ * Client-side pricing — duplicated from server, which must agree with it;
+ * tests/pricing.test.ts pins that invariant.
+ *
+ * Rolled-up rows arrive already priced (`rowCost`); this is for the raw
+ * per-request entries the session detail fetches on demand.
  *
  * See server/pricing.ts for the full rationale on pricing tiers.
  */
+
+import type { UsageRow } from './types';
 
 const M = 1_000_000;
 
@@ -222,6 +226,15 @@ function tieredCost(tokens: number, base: number, tiered: number | undefined): n
   return TIER_THRESHOLD * base + (tokens - TIER_THRESHOLD) * tiered;
 }
 
+/**
+ * Cost of a rolled-up row. The server priced every request before summing
+ * them (tiers and the fast multiplier apply per request), so the row's own
+ * token counts must never be re-priced — use these numbers as they are.
+ */
+export function rowCost(r: UsageRow): number {
+  return r.ci + r.co + r.cwc + r.crc;
+}
+
 export function costForEntry(e: {
   m: string;
   i: number;
@@ -247,12 +260,9 @@ export function costForEntry(e: {
 }
 
 /**
- * Cost broken down by token type, in one pass. Replaces the pattern of
- * calling `costForEntry` four times with three of the four fields zeroed
- * out — that pattern allocated O(N) intermediate objects and did 4×
- * pricing lookups per entry. This is one lookup, one tier check, four
- * multiplies. Used for the hero decomposition strip and any per-row
- * type breakdown.
+ * Cost broken down by token type, in one pass. The client counterpart of
+ * the server's `costBreakdownForEntry`, which is what fills a row's
+ * `ci`/`co`/`cwc`/`crc`; tests/pricing.test.ts pins the two together.
  */
 export function costBreakdown(e: {
   m: string;

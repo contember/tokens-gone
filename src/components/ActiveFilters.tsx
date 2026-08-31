@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Entry, Filters as F, Harness } from '../types';
+import type { Filters as F, Harness, UsageRow } from '../types';
 import { HARNESS_LABELS, entryHarness } from '../types';
 import { modelShort } from '../format';
 
@@ -16,7 +16,7 @@ export function ActiveFilters({
 }: {
   filters: F;
   setFilters: (f: F) => void;
-  entries: Entry[];
+  entries: UsageRow[];
 }) {
   const rangeLabel = useMemo(() => describeRange(filters), [filters]);
   const anyActive =
@@ -32,10 +32,10 @@ export function ActiveFilters({
     const hs = new Map<Harness, number>();
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i]!;
-      ms.set(e.m, (ms.get(e.m) ?? 0) + 1);
-      ps.set(e.p, (ps.get(e.p) ?? 0) + 1);
+      ms.set(e.m, (ms.get(e.m) ?? 0) + e.n);
+      ps.set(e.p, (ps.get(e.p) ?? 0) + e.n);
       const h = entryHarness(e);
-      hs.set(h, (hs.get(h) ?? 0) + 1);
+      hs.set(h, (hs.get(h) ?? 0) + e.n);
     }
     return {
       allModels: [...ms.entries()].sort((a, b) => b[1] - a[1]),

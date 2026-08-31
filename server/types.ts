@@ -150,3 +150,32 @@ export type CacheFile = {
   version: number;
   files: Record<string, FileCacheRecord>;
 };
+
+/**
+ * What `/api/data` ships: every request inside a `ROLLUP_BUCKET_MS` window
+ * that shares session + model + fast-mode + source, collapsed into one row.
+ * Costs are summed from per-request pricing — see `rollupEntries`.
+ */
+export type UsageRow = {
+  /** First request in the bucket. */
+  t: number;
+  /** Last request in the bucket. */
+  te: number;
+  /** Requests collapsed into this row. */
+  n: number;
+  p: string;
+  s: string;
+  m: string;
+  f: 0 | 1;
+  src?: 'cc' | 'codex' | 'opencode' | 'pi';
+  /** Summed tokens. */
+  i: number;
+  o: number;
+  cc: number;
+  cr: number;
+  /** Summed USD, split by token type. */
+  ci: number;
+  co: number;
+  cwc: number;
+  crc: number;
+};

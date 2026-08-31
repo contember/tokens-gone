@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react';
-import type { Entry } from '../types';
+import type { UsageRow } from '../types';
 import type { Totals } from '../aggregate';
 import { fmtInt, fmtMoney, fmtTokens, modelClass, modelShort } from '../format';
 import { DecompBar, type Segment } from './DecompBar';
 import { FAMILIES, OTHER, familyByKey, familyOf } from '../families';
-import { costForEntry } from '../pricing';
+import { rowCost } from '../pricing';
 
 export type Row = {
   key: string;
@@ -14,7 +14,7 @@ export type Row = {
    * For model rows the split is by token-type cost; for project rows it's
    * by model — see `decomposeBy`.
    */
-  entries: Entry[];
+  entries: UsageRow[];
 };
 
 type SortKey = 'cost' | 'count' | 'total';
@@ -275,7 +275,7 @@ function computeSegments(r: Row, decomposeBy: 'type' | 'model'): Segment[] {
   for (let i = 0; i < r.entries.length; i++) {
     const e = r.entries[i]!;
     const cls = familyOf(e.m).key;
-    byFam.set(cls, (byFam.get(cls) ?? 0) + costForEntry(e));
+    byFam.set(cls, (byFam.get(cls) ?? 0) + rowCost(e));
   }
   const out: Segment[] = [];
   for (const fam of [...FAMILIES, OTHER]) {

@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
-import type { Entry } from '../types';
-import { costForEntry } from '../pricing';
+import type { UsageRow } from '../types';
+import { rowCost } from '../pricing';
 import { fmtMoney } from '../format';
 
 /**
@@ -9,7 +9,7 @@ import { fmtMoney } from '../format';
  * Cheap to compute (single pass) and complements the year heatmap by
  * answering the question "what's my working rhythm?" not "what's my run rate?".
  */
-export function HourGrid({ entries }: { entries: Entry[] }) {
+export function HourGrid({ entries }: { entries: UsageRow[] }) {
   const { grid, max } = useMemo(() => {
     const grid: number[][] = Array.from({ length: 7 }, () => new Array(24).fill(0));
     let max = 0;
@@ -18,7 +18,7 @@ export function HourGrid({ entries }: { entries: Entry[] }) {
       const d = new Date(e.t);
       const dow = (d.getDay() + 6) % 7; // 0 = Monday
       const h = d.getHours();
-      const c = costForEntry(e);
+      const c = rowCost(e);
       grid[dow]![h]! += c;
       if (grid[dow]![h]! > max) max = grid[dow]![h]!;
     }

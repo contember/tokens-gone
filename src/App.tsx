@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { ApiData, Entry, Filters } from './types';
+import type { ApiData, Filters, UsageRow } from './types';
 import {
   activityStats,
   applyFilters,
@@ -12,7 +12,6 @@ import {
   type Totals,
 } from './aggregate';
 import { fmtMoney } from './format';
-import { costBreakdown } from './pricing';
 import { ActiveFilters } from './components/ActiveFilters';
 import { ActivityHeatmap, type HeatmapMode } from './components/ActivityHeatmap';
 import { BreakdownTable } from './components/BreakdownTable';
@@ -122,7 +121,7 @@ function Dashboard({
   autoRefresh: boolean;
   onToggleAutoRefresh: () => void;
 }) {
-  const filtered = useMemo<Entry[]>(
+  const filtered = useMemo<UsageRow[]>(
     () => applyFilters(data.entries, filters),
     [data.entries, filters],
   );
@@ -136,26 +135,26 @@ function Dashboard({
       count: 0, input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0, cost: 0,
     };
     let inputCost = 0, outputCost = 0, cwriteCost = 0, creadCost = 0;
-    const byModel = new Map<string, { totals: Totals; entries: Entry[] }>();
-    const byProject = new Map<string, { totals: Totals; entries: Entry[] }>();
+    const byModel = new Map<string, { totals: Totals; entries: UsageRow[] }>();
+    const byProject = new Map<string, { totals: Totals; entries: UsageRow[] }>();
 
     for (let i = 0; i < filtered.length; i++) {
       const e = filtered[i]!;
-      const b = costBreakdown(e);
+      const cost = e.ci + e.co + e.cwc + e.crc;
 
-      t.count++;
+      t.count += e.n;
       t.input += e.i; t.output += e.o; t.cacheWrite += e.cc; t.cacheRead += e.cr;
       t.total += e.i + e.o + e.cc + e.cr;
-      t.cost += b.total;
-      inputCost += b.input; outputCost += b.output;
-      cwriteCost += b.cwrite; creadCost += b.cread;
+      t.cost += cost;
+      inputCost += e.ci; outputCost += e.co;
+      cwriteCost += e.cwc; creadCost += e.crc;
 
       let m = byModel.get(e.m);
       if (!m) {
         m = { totals: emptyTotals(), entries: [] };
         byModel.set(e.m, m);
       }
-      addToTotals(m.totals, e, b.total);
+      addToTotals(m.totals, e, cost);
       m.entries.push(e);
 
       let p = byProject.get(e.p);
@@ -163,7 +162,7 @@ function Dashboard({
         p = { totals: emptyTotals(), entries: [] };
         byProject.set(e.p, p);
       }
-      addToTotals(p.totals, e, b.total);
+      addToTotals(p.totals, e, cost);
       p.entries.push(e);
     }
 
@@ -292,7 +291,7 @@ function Dashboard({
         <div className="right">
           <span>
             <span className="stat-dot" />
-            {data.entries.length.toLocaleString()} entries · {data.stats.files} files · {data.stats.tookMs}ms
+            {data.requests.toLocaleString()} entries · {data.stats.files} files · {data.stats.tookMs}ms
           </span>
           <button
             className={`live-toggle${autoRefresh ? ' active' : ''}`}
@@ -379,7 +378,6 @@ function Dashboard({
       {selectedSession && (
         <SessionDetail
           session={selectedSession}
-          allEntries={data.entries}
           onClose={() => setSelectedSession(null)}
         />
       )}
@@ -529,8 +527,8 @@ function emptyTotals(): Totals {
   return { count: 0, input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0, cost: 0 };
 }
 
-function addToTotals(t: Totals, e: Entry, cost: number): void {
-  t.count++;
+function addToTotals(t: Totals, e: UsageRow, cost: number): void {
+  t.count += e.n;
   t.input += e.i;
   t.output += e.o;
   t.cacheWrite += e.cc;
