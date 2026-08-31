@@ -19,6 +19,14 @@ import { gzipSync } from 'node:zlib';
 import { PROVIDERS, type Provider, type ProviderScanStats } from './providers/index.ts';
 import { markTranscriptUsageOwnership } from './providers/transcript.ts';
 import { loadPromptDays, type PromptDay } from './promptHistory.ts';
+import { createStyle } from './ansi.ts';
+import {
+  printBanner,
+  printFooter,
+  printScanFailure,
+  printScanResult,
+  startSpinner,
+} from './startupLog.ts';
 import { renderUsageSummary, summarizeUsage } from './summary.ts';
 import type { Entry, SessionMeta } from './types.ts';
 
@@ -328,30 +336,37 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const actualPort = (server.address() as { port: number }).port;
   const url = `http://localhost:${actualPort}`;
 
-  console.log(`tokens-gone ready on ${url}`);
-  for (const p of PROVIDERS) {
-    const dir = p.defaultDataDir();
-    const detected = p.detect(dir);
-    console.log(`${p.label.padEnd(12)} ${detected ? dir : '(not detected)'}`);
-  }
+  const style = createStyle();
+  printBanner(
+    style,
+    url,
+    PROVIDERS.map((p) => {
+      const dir = p.defaultDataDir();
+      return { label: p.label, dir, detected: p.detect(dir) };
+    }),
+  );
 
+  const stopSpinner = startSpinner(style, 'Scanning logs…');
   refresh()
     .then(() => {
+      stopSpinner();
       if (!cached) return;
-      const detected = cached.providers.filter((p) => p.detected);
-      const parts = detected.map(
-        (p) => `${p.label}: ${p.stats.files} files (${p.stats.cachedFiles} cached)`,
-      );
-      console.log(
-        `Loaded ${cached.entries.length} entries — ${parts.join(', ')} in ${cached.stats.tookMs}ms`,
-      );
-      const summary = renderUsageSummary(summarizeUsage(cached.entries, Date.now()));
+      printScanResult(style, {
+        entries: cached.entries.length,
+        stats: cached.stats,
+        providers: cached.providers,
+      });
+      const summary = renderUsageSummary(summarizeUsage(cached.entries, Date.now()), style);
       if (summary.length > 0) {
         console.log('');
-        for (const line of summary) console.log(line);
+        for (const line of summary) console.log(line ? `  ${line}` : '');
       }
     })
-    .catch((err) => console.error('Initial scan failed', err));
+    .catch((err) => {
+      stopSpinner();
+      printScanFailure(style, err);
+    })
+    .finally(() => printFooter(style, url));
 
   return {
     url,

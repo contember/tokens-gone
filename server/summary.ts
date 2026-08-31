@@ -10,6 +10,7 @@
  * reuses the server's pricing table (`costForRequest`).
  */
 
+import { PLAIN, type Style } from './ansi.ts';
 import { costForRequest } from './pricing.ts';
 import type { Entry } from './types.ts';
 
@@ -170,27 +171,28 @@ function money(n: number): string {
 const MAX_BREAKDOWN_ITEMS = 6;
 
 /** Render one breakdown block ("by model (30d)" + an aligned item per line). */
-function breakdownBlock(heading: string, items: CostItem[]): string[] {
+function breakdownBlock(heading: string, items: CostItem[], st: Style): string[] {
   if (items.length === 0) return [];
   const shown = items.slice(0, MAX_BREAKDOWN_ITEMS);
   const rest = items.length - shown.length;
   const labelW = Math.max(...shown.map((it) => it.label.length));
   const moneyStrs = shown.map((it) => money(it.cost));
   const moneyW = Math.max(...moneyStrs.map((s) => s.length));
-  const lines = [`  ${heading}`];
+  const lines = [`  ${st.dim(heading)}`];
   shown.forEach((it, i) => {
-    lines.push(`    ${it.label.padEnd(labelW)}  ${moneyStrs[i]!.padStart(moneyW)}`);
+    lines.push(`    ${it.label.padEnd(labelW)}  ${st.yellow(moneyStrs[i]!.padStart(moneyW))}`);
   });
-  if (rest > 0) lines.push(`    +${rest} more`);
+  if (rest > 0) lines.push(`    ${st.dim(`+${rest} more`)}`);
   return lines;
 }
 
 /**
- * Render the summary as plain log lines (no trailing newline, no ANSI).
- * Returns `[]` when there's been no activity in 30 days so the caller can
- * skip printing a wall of zeros on a fresh install.
+ * Render the summary as log lines (no trailing newline). Returns `[]` when
+ * there's been no activity in 30 days so the caller can skip printing a wall
+ * of zeros on a fresh install. Padding is computed before styling, so the
+ * columns line up with or without colour.
  */
-export function renderUsageSummary(summary: UsageSummary): string[] {
+export function renderUsageSummary(summary: UsageSummary, st: Style = PLAIN): string[] {
   if (summary['30d'].reqs === 0) return [];
 
   const rows: { label: string; w: WindowStats }[] = [
@@ -206,16 +208,20 @@ export function renderUsageSummary(summary: UsageSummary): string[] {
   const reqStrs = rows.map((r) => r.w.reqs.toLocaleString('en-US'));
   const reqW = Math.max(...reqStrs.map((s) => s.length));
 
-  const lines: string[] = ['Usage'];
+  const lines: string[] = [st.bold('Usage')];
   rows.forEach((r, i) => {
-    lines.push(`  ${r.label.padEnd(labelW)}  ${costStrs[i]!.padStart(costW)}  ${reqStrs[i]!.padStart(reqW)} reqs`);
+    const label = st.dim(r.label.padEnd(labelW));
+    const cost = st.bold(st.yellow(costStrs[i]!.padStart(costW)));
+    const reqs = st.dim(`${reqStrs[i]!.padStart(reqW)} reqs`);
+    lines.push(`  ${label}  ${cost}  ${reqs}`);
   });
 
   const m30 = summary['30d'];
-  const model = breakdownBlock('by model (30d)', m30.byModel);
+  const model = breakdownBlock('by model (30d)', m30.byModel, st);
   // Only worth showing harnesses when more than one contributed — otherwise
   // it just restates the 30-day total.
-  const harness = m30.byHarness.length > 1 ? breakdownBlock('by harness (30d)', m30.byHarness) : [];
+  const harness =
+    m30.byHarness.length > 1 ? breakdownBlock('by harness (30d)', m30.byHarness, st) : [];
   if (model.length > 0 || harness.length > 0) {
     lines.push('');
     lines.push(...model, ...harness);

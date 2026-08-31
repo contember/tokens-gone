@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { createStyle } from '../server/ansi';
 import { modelLabel, renderUsageSummary, summarizeUsage } from '../server/summary';
 import type { Entry } from '../server/types';
 
@@ -124,6 +125,17 @@ describe('renderUsageSummary', () => {
     expect(lines.some((l) => l.includes('last 7 days'))).toBe(true);
     expect(lines.some((l) => l.includes('last 30 days'))).toBe(true);
     expect(lines.some((l) => l.includes('by model (30d)'))).toBe(true);
+  });
+
+  it('styling only adds escapes — the plain layout is unchanged', () => {
+    const s = summarizeUsage(
+      [entry({ t: NOW - 1000 }), entry({ t: NOW - 2000, src: 'codex', m: 'gpt-5' })],
+      NOW,
+    );
+    const styled = renderUsageSummary(s, createStyle(true));
+    const stripped = styled.map((l) => l.replace(/\x1b\[\d+m/g, ''));
+    expect(stripped).toEqual(renderUsageSummary(s));
+    expect(styled.join('\n')).toContain('\x1b[');
   });
 
   it('shows the harness breakdown only when more than one harness is active', () => {

@@ -6,6 +6,7 @@
 
 import { spawn } from 'node:child_process';
 import { startServer } from './server.ts';
+import { VERSION } from './version.ts';
 
 type Args = {
   port: number;
@@ -42,8 +43,7 @@ function parseArgs(argv: string[]): Args {
       process.stdout.write(HELP);
       process.exit(0);
     } else if (a === '--version' || a === '-v') {
-      // VERSION is replaced at build time via esbuild --define.
-      process.stdout.write(`${(globalThis as any).__TOKENS_GONE_VERSION__ ?? 'dev'}\n`);
+      process.stdout.write(`${VERSION}\n`);
       process.exit(0);
     } else if (a === '--port' || a === '-p') {
       const v = Number(argv[++i]);
@@ -61,6 +61,20 @@ function parseArgs(argv: string[]): Args {
     }
   }
   return args;
+}
+
+/**
+ * The OpenCode provider reads a SQLite DB through node:sqlite, whose
+ * ExperimentalWarning would land in the middle of the startup output.
+ * Other warnings still reach Node's own handler.
+ */
+function hideSqliteExperimentalWarning(): void {
+  const defaults = process.listeners('warning');
+  process.removeAllListeners('warning');
+  process.on('warning', (warning) => {
+    if (warning.name === 'ExperimentalWarning' && warning.message.includes('SQLite')) return;
+    for (const listener of defaults) listener(warning);
+  });
 }
 
 function openInBrowser(url: string): void {
@@ -81,6 +95,7 @@ function openInBrowser(url: string): void {
 }
 
 const args = parseArgs(process.argv.slice(2));
+hideSqliteExperimentalWarning();
 const running = await startServer({ port: args.port });
 if (args.open) {
   openInBrowser(running.url);
