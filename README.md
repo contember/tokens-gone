@@ -1,8 +1,8 @@
 # tokens-gone
 
 Local web dashboard for AI coding agent token usage and cost. Reads Claude
-Code, Codex, and Pi session logs, aggregates tokens and dollars, and lets you
-slice the data interactively.
+Code, Codex, OpenCode, and Pi session logs, aggregates tokens and dollars, and
+lets you slice the data interactively.
 
 ## Run
 
@@ -28,6 +28,9 @@ with thousands of session files.
 
 - `CLAUDE_CONFIG_DIR` — override the Claude data dir (default `~/.claude`).
 - `CODEX_HOME` — override the Codex data dir (default `~/.codex`).
+- `XDG_DATA_HOME` — where OpenCode keeps `opencode/opencode.db` (default
+  `~/.local/share`). Reading it needs Node 22.5+ for `node:sqlite`; on older
+  Node the other providers still work and OpenCode is skipped.
 - `PI_CODING_AGENT_DIR` — override the Pi agent dir (default `~/.pi/agent`).
 - `PI_CODING_AGENT_SESSION_DIR` — override the Pi sessions dir directly.
 - `PORT` — same as `--port`.
@@ -45,7 +48,9 @@ LiteLLM pricing every run. tokens-gone is the same idea but:
 
 - `server/providers/*` walk provider-specific JSONL directories, parse logs
   streamingly, and cache parsed entries on disk keyed by `(path, size, mtime)`.
-  Unchanged files are reused verbatim; appended files are tail-parsed.
+  Unchanged files are reused verbatim; appended files are tail-parsed. OpenCode
+  is the exception: it stores sessions in SQLite, so its provider reads the DB
+  read-only and caches per session instead of per file.
 - `server/pricing.ts` resolves Anthropic Claude and OpenAI GPT pricing by model
   name, including provider-prefixed and date-suffixed model IDs. It accounts
   for provider-specific caching, tiered pricing, and fast-mode rates.

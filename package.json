@@ -1,7 +1,7 @@
 {
   "name": "tokens-gone",
   "version": "0.1.0",
-  "description": "Local dashboard for AI coding agent token usage and costs. Reads Claude Code, Codex, and Pi logs, aggregates spend, slices interactively.",
+  "description": "Local dashboard for AI coding agent token usage and costs. Reads Claude Code, Codex, OpenCode, and Pi logs, aggregates spend, slices interactively.",
   "type": "module",
   "bin": {
     "tokens-gone": "dist/cli.js"
@@ -26,6 +26,7 @@
     "claude",
     "claude-code",
     "codex",
+    "opencode",
     "pi",
     "anthropic",
     "tokens",

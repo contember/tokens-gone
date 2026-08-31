@@ -13,6 +13,8 @@ await build({
   platform: 'node',
   target: 'node20',
   format: 'esm',
+  // Optional dev-time binding; the OpenCode provider falls back to node:sqlite.
+  external: ['bun:sqlite'],
   outfile: 'dist/cli.js',
   banner: { js: '#!/usr/bin/env node' },
   define: {

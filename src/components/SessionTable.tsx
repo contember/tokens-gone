@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import type { SessionInfo, Totals } from '../aggregate';
+import { HARNESS_LABELS, type Harness } from '../types';
 import { fmtInt, fmtMoney, fmtRelativeDay, fmtTokens, modelClass, modelShort } from '../format';
 
 type SortKey = 'lastSeen' | 'cost' | 'count' | 'duration' | 'total';
@@ -286,7 +287,7 @@ function groupMultiAgentSessions(sessions: SessionInfo[]): TableItem[] {
   const childrenByParent = new Map<string, SessionInfo[]>();
   for (const session of sessions) {
     byId.set(session.s, session);
-    if (session.src !== 'codex') continue;
+    if (session.src !== 'codex' && session.src !== 'opencode') continue;
     if (session.threadSource !== 'subagent') continue;
     if (!session.parentSessionId) continue;
     let bucket = childrenByParent.get(session.parentSessionId);
@@ -305,7 +306,8 @@ function groupMultiAgentSessions(sessions: SessionInfo[]): TableItem[] {
     const members = parent ? [parent, ...children] : [...children];
     members.sort((a, b) => a.firstSeen - b.firstSeen);
     for (const member of members) groupedIds.add(member.s);
-    items.push({ kind: 'group', group: sessionGroup(parentId, members, parent) });
+    const harness = children[0]?.src ?? 'codex';
+    items.push({ kind: 'group', group: sessionGroup(parentId, members, parent, harness) });
   }
 
   for (const session of sessions) {
@@ -319,6 +321,7 @@ function sessionGroup(
   parentId: string,
   sessions: SessionInfo[],
   parent: SessionInfo | undefined,
+  harness: Harness,
 ): SessionGroup {
   const totals = combinedTotals(sessions);
   const models: string[] = [];
@@ -334,7 +337,7 @@ function sessionGroup(
     }
   }
   return {
-    id: `codex:${parentId}`,
+    id: `${harness}:${parentId}`,
     parentId,
     sessions,
     totals,
@@ -342,7 +345,7 @@ function sessionGroup(
     project: projects.size === 1 ? sessions[0]?.project ?? 'unknown' : `${fmtInt(projects.size)} projects`,
     firstSeen,
     lastSeen,
-    label: parent ? sessionLabel(parent) : `Codex run ${parentId.slice(0, 8)}`,
+    label: parent ? sessionLabel(parent) : `${HARNESS_LABELS[harness]} run ${parentId.slice(0, 8)}`,
   };
 }
 

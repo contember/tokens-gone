@@ -26,6 +26,7 @@ Environment:
   PORT                          Same as --port
   CLAUDE_CONFIG_DIR             Override the Claude data dir (default ~/.claude)
   CODEX_HOME                    Override the Codex data dir (default ~/.codex)
+  XDG_DATA_HOME                 Where OpenCode lives (default ~/.local/share)
   PI_CODING_AGENT_DIR           Override the Pi agent dir (default ~/.pi/agent)
   PI_CODING_AGENT_SESSION_DIR   Override the Pi sessions dir directly
 `;

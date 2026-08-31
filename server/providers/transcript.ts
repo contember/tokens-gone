@@ -708,6 +708,18 @@ export function piTokens(message: Record<string, unknown>): TranscriptTokens | u
   });
 }
 
+export function openCodeTokens(message: Record<string, unknown>): TranscriptTokens | undefined {
+  const tokens = recordField(message, 'tokens');
+  if (!tokens) return undefined;
+  const cache = recordField(tokens, 'cache');
+  return presentTokens({
+    input: numberField(tokens, 'input'),
+    output: numberField(tokens, 'output'),
+    cacheWrite: cache ? numberField(cache, 'write') : undefined,
+    cacheRead: cache ? numberField(cache, 'read') : undefined,
+  });
+}
+
 function presentTokens(tokens: TranscriptTokens): TranscriptTokens | undefined {
   const hasAny =
     tokens.input !== undefined ||
