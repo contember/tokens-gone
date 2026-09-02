@@ -3,7 +3,7 @@ import { costBreakdownForEntry, costForRequest, getPricing } from '../server/pri
 import { costBreakdown, costForEntry } from '../src/pricing';
 
 describe('pricing', () => {
-  it('fable 5 / mythos 5 share the flagship tier ($10/$50 per M), no fast/tier', () => {
+  it('prices fable 5 / mythos 5 at $10/$50 per M with $1 cache reads', () => {
     for (const model of [
       'claude-fable-5',
       'claude-fable-5-20260601',
@@ -16,6 +16,24 @@ describe('pricing', () => {
       expect(p?.output).toBe(50 / 1_000_000);
       expect(p?.cacheWrite).toBe(12.5 / 1_000_000);
       expect(p?.cacheRead).toBe(1 / 1_000_000);
+      expect(p?.fastMultiplier).toBeUndefined();
+      expect(p?.tiered).toBeUndefined();
+    }
+  });
+
+  it('prices fable 5.1 / mythos 5.1 cache reads at $0.25 per M', () => {
+    for (const model of [
+      'claude-fable-5.1',
+      'claude-fable-5-1-20260901',
+      'anthropic/claude-fable-5.1',
+      'claude-mythos-5.1',
+      'claude-mythos-5-1',
+    ]) {
+      const p = getPricing(model);
+      expect(p?.input).toBe(10 / 1_000_000);
+      expect(p?.output).toBe(50 / 1_000_000);
+      expect(p?.cacheWrite).toBe(12.5 / 1_000_000);
+      expect(p?.cacheRead).toBe(0.25 / 1_000_000);
       expect(p?.fastMultiplier).toBeUndefined();
       expect(p?.tiered).toBeUndefined();
     }
@@ -198,6 +216,7 @@ describe('pricing', () => {
     const tokens = { input: 12345, output: 6789, cacheWrite: 50000, cacheRead: 200000 };
     for (const model of [
       'claude-fable-5',
+      'claude-fable-5.1',
       'claude-mythos-5',
       'claude-opus-4-7',
       'claude-opus-4-6',
@@ -246,7 +265,7 @@ describe('pricing', () => {
   it('server and client agree on the per-type cost split', () => {
     // The server rolls up entries using its own breakdown; the client
     // reprices raw per-request entries with its copy. They must not drift.
-    for (const model of ['claude-fable-5', 'claude-opus-4-7', 'claude-sonnet-4-5', 'gpt-5.6-sol']) {
+    for (const model of ['claude-fable-5', 'claude-fable-5.1', 'claude-opus-4-7', 'claude-sonnet-4-5', 'gpt-5.6-sol']) {
       for (const f of [0, 1] as const) {
         // Input above 200k exercises the tier on sonnet 4.5.
         const e = { m: model, i: 250_000, o: 3_000, cc: 40_000, cr: 900_000, f };

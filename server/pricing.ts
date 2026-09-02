@@ -2,14 +2,14 @@
  * Hardcoded pricing for Anthropic Claude and OpenAI GPT-5 family
  * (USD per million tokens).
  *
- * Sources cross-checked against Anthropic's pricing page, OpenAI's pricing
- * page, and several third-party rate trackers on 2026-05-11. GPT-5.6 rates
- * were added from OpenAI's preview announcement on 2026-07-10.
+ * Sources cross-checked against Anthropic, OpenAI, and third-party pricing
+ * pages on 2026-05-11. Fable 5.1 was updated from Anthropic on 2026-09-02;
+ * GPT-5.6 was added from OpenAI's preview announcement on 2026-07-10.
  *
  * Notable gotchas:
- *  - Fable 5 is the new flagship, 2x the price of Opus ($10/$50 per M).
- *    Full 1M context at standard pricing; no fast service tier. Mythos 5
- *    (and Mythos Preview) share this exact tier.
+ *  - Fable 5 is 2x the price of Opus ($10/$50 per M). Fable 5.1 keeps
+ *    those rates but cuts cache reads from $1 to $0.25 per M. Mythos uses
+ *    the same versioned rates.
  *  - Opus 4.5+ is THREE TIMES CHEAPER than the original Opus 4/4.1.
  *  - Sonnet 4.5 has 1M context with tiered pricing above 200k tokens;
  *    Sonnet 4.6 dropped that tier.
@@ -41,14 +41,18 @@ export type ModelPricing = {
 
 const M = 1_000_000;
 
-const FABLE: ModelPricing = {
-  // Claude Fable 5 (and Mythos 5 / Mythos Preview, same pricing) — new
-  // flagship tier, 2x Opus. Full 1M context at standard pricing (no tier
-  // above 200k) and no fast-mode variant.
+const FABLE_5: ModelPricing = {
   input: 10 / M,
   output: 50 / M,
   cacheWrite: 12.5 / M,
   cacheRead: 1 / M,
+};
+
+const FABLE_51: ModelPricing = {
+  input: 10 / M,
+  output: 50 / M,
+  cacheWrite: 12.5 / M,
+  cacheRead: 0.25 / M,
 };
 
 const OPUS_NEW: ModelPricing = {
@@ -240,7 +244,9 @@ function minorVersion(model: string, family: string): number | null {
 export function getPricing(model: string): ModelPricing | null {
   const m = model.toLowerCase();
 
-  if (m.includes('fable') || m.includes('mythos')) return FABLE;
+  if (m.includes('fable') || m.includes('mythos')) {
+    return /(?:fable|mythos)-5(?:\.|-)1(?:-|$)/.test(m) ? FABLE_51 : FABLE_5;
+  }
 
   if (m.includes('haiku')) return HAIKU;
 

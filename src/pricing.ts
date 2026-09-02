@@ -26,14 +26,18 @@ type ModelPricing = {
   fastMultiplier?: number;
 };
 
-const FABLE: ModelPricing = {
-  // Claude Fable 5 (and Mythos 5 / Mythos Preview, same pricing) — new
-  // flagship tier, 2x Opus. Full 1M context at standard pricing (no tier
-  // above 200k) and no fast-mode variant.
+const FABLE_5: ModelPricing = {
   input: 10 / M,
   output: 50 / M,
   cacheWrite: 12.5 / M,
   cacheRead: 1 / M,
+};
+
+const FABLE_51: ModelPricing = {
+  input: 10 / M,
+  output: 50 / M,
+  cacheWrite: 12.5 / M,
+  cacheRead: 0.25 / M,
 };
 
 const OPUS_NEW: ModelPricing = {
@@ -200,7 +204,7 @@ export function getPricing(model: string): ModelPricing | null {
   const m = model.toLowerCase();
   let result: ModelPricing | null;
   if (m.includes('fable') || m.includes('mythos')) {
-    result = FABLE;
+    result = /(?:fable|mythos)-5(?:\.|-)1(?:-|$)/.test(m) ? FABLE_51 : FABLE_5;
   } else if (m.includes('haiku')) {
     result = HAIKU;
   } else if (m.includes('sonnet')) {
