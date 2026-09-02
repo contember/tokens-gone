@@ -1106,6 +1106,86 @@ td.cell-decomp .decomp {
   display: inline-block;
 }
 
+.date-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+  margin-bottom: 10px;
+}
+
+.request-table-wrap {
+  overflow-x: auto;
+}
+
+.request-table {
+  min-width: 920px;
+}
+
+.request-table tbody tr:focus-visible {
+  outline: 1px solid var(--accent-line);
+  outline-offset: -1px;
+}
+
+.request-cell-main {
+  position: relative;
+  width: 34%;
+  max-width: 390px;
+}
+
+.request-main {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.request-rank {
+  flex: 0 0 26px;
+  color: var(--t-mute);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.request-identity {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.request-title {
+  overflow: hidden;
+  color: var(--t-1);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.request-time,
+.request-harness,
+.request-fast,
+.request-mobile-meta {
+  color: var(--t-3);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.request-mobile-meta {
+  display: none;
+}
+
+.request-project {
+  display: block;
+  color: var(--t-2);
+}
+
+.request-harness {
+  display: block;
+}
+
+.request-fast {
+  margin-left: var(--s-1);
+}
+
 /* ── chart ─────────────────────────────────────────────── */
 
 .chart-wrap {
@@ -1947,6 +2027,27 @@ tbody tr.clickable {
 }
 
 @media (max-width: 720px) {
+  .request-table {
+    min-width: 100%;
+  }
+
+  .request-table th:nth-child(n + 2):nth-child(-n + 7),
+  .request-table td:nth-child(n + 2):nth-child(-n + 7) {
+    display: none;
+  }
+
+  .request-cell-main {
+    width: auto;
+    max-width: 0;
+  }
+
+  .request-mobile-meta {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .modal-backdrop {
     padding: var(--s-3);
   }

@@ -33,6 +33,7 @@ import {
 } from './startupLog.ts';
 import { rollupEntries } from './rollup.ts';
 import { renderUsageSummary, summarizeUsage } from './summary.ts';
+import { rankRequests, type RequestHarness } from './requests.ts';
 import type { Entry, SessionMeta, UsageRow } from './types.ts';
 
 type ProviderInfo = {
@@ -49,6 +50,8 @@ type Cache = {
   entries: Entry[];
   /** What `/api/data` ships. */
   rows: UsageRow[];
+  /** Per-request costs computed while building `rows`. */
+  requestCosts: Float64Array;
   sessionMeta: Record<string, SessionMeta>;
   stats: ProviderScanStats;
   providers: ProviderInfo[];
@@ -123,7 +126,7 @@ const EMPTY_STATS: ProviderScanStats = {
 // have headroom and the first run doesn't truncate just-recent activity.
 const PROMPT_HISTORY_WINDOW_DAYS = 400;
 
-async function runScan(): Promise<Omit<Cache, 'generatedAt' | 'rows'>> {
+async function runScan(): Promise<Omit<Cache, 'generatedAt' | 'rows' | 'requestCosts'>> {
   const promptFromMs = Date.now() - PROMPT_HISTORY_WINDOW_DAYS * 86400000;
   const [providerResults, promptActivity] = await Promise.all([
     scanProviders(),
@@ -138,7 +141,7 @@ async function runScan(): Promise<Omit<Cache, 'generatedAt' | 'rows'>> {
  * not detected" without special-casing.
  */
 async function scanProviders(): Promise<
-  Omit<Cache, 'generatedAt' | 'promptActivity' | 'rows'>
+  Omit<Cache, 'generatedAt' | 'promptActivity' | 'rows' | 'requestCosts'>
 > {
   const results = await Promise.all(
     PROVIDERS.map(async (p) => {
@@ -211,7 +214,13 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     if (inFlight) return inFlight;
     inFlight = (async () => {
       const result = await runScan();
-      cached = { ...result, rows: rollupEntries(result.entries), generatedAt: Date.now() };
+      const requestCosts = new Float64Array(result.entries.length);
+      cached = {
+        ...result,
+        rows: rollupEntries(result.entries, requestCosts),
+        requestCosts,
+        generatedAt: Date.now(),
+      };
       inFlight = null;
     })();
     return inFlight;
@@ -267,6 +276,41 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       }
       out.sort((a, b) => a.t - b.t);
       sendJson(req, res, { entries: out });
+      return;
+    }
+
+    if (pathname === '/api/requests') {
+      if (req.method !== 'GET') {
+        sendJson(req, res, { error: 'Method Not Allowed' }, 405);
+        return;
+      }
+      if (!cached) await refresh();
+
+      const from = numberParam(url.searchParams.get('from'));
+      const to = numberParam(url.searchParams.get('to'));
+      const limitValue = url.searchParams.get('limit');
+      const requestedLimit = limitValue === null ? 50 : numberParam(limitValue);
+      const harnesses = requestHarnesses(url.searchParams.getAll('harness'));
+      if (
+        from === undefined ||
+        to === undefined ||
+        requestedLimit === undefined ||
+        requestedLimit === null ||
+        !harnesses
+      ) {
+        sendJson(req, res, { error: 'Invalid request filter' }, 400);
+        return;
+      }
+
+      const limit = Math.min(200, Math.max(1, Math.floor(requestedLimit)));
+      const result = rankRequests(cached!.entries, {
+        from,
+        to,
+        projects: new Set(url.searchParams.getAll('project')),
+        models: new Set(url.searchParams.getAll('model')),
+        harnesses,
+      }, limit, cached!.requestCosts);
+      sendJson(req, res, result);
       return;
     }
 
@@ -407,6 +451,23 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       server.close((err) => (err ? reject(err) : resolve()));
     }),
   };
+}
+
+function numberParam(value: string | null): number | null | undefined {
+  if (value === null) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function requestHarnesses(values: string[]): Set<RequestHarness> | null {
+  const harnesses = new Set<RequestHarness>();
+  for (const value of values) {
+    if (value !== 'cc' && value !== 'codex' && value !== 'opencode' && value !== 'pi') {
+      return null;
+    }
+    harnesses.add(value);
+  }
+  return harnesses;
 }
 
 // When this module is the entry (bun run server/server.ts), start immediately.

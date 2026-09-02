@@ -3,6 +3,8 @@ import type { Filters as F, Harness, UsageRow } from '../types';
 import { HARNESS_LABELS, entryHarness } from '../types';
 import { modelShort } from '../format';
 
+const USAGE_BUCKET_MS = 5 * 60_000;
+
 /**
  * Active filters rendered as breadcrumbs at the top of the view —
  * "All time · Opus 4.7 · webmaster". Each segment is a clickable chip
@@ -143,10 +145,21 @@ export function ActiveFilters({
 
 function describeRange(f: F): string {
   if (f.from === null && f.to === null) return 'All time';
-  const fmt = (ms: number) =>
-    new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  const fmt = (ms: number) => {
+    const date = new Date(ms);
+    if (date.getHours() === 0 && date.getMinutes() === 0 && date.getSeconds() === 0) {
+      return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+    return date.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
   if (f.from !== null && f.to !== null) {
-    return `${fmt(f.from)} – ${fmt(f.to - 1)}`;
+    const end = f.to === startOfDay(f.to) ? f.to - 1 : f.to;
+    return `${fmt(f.from)} – ${fmt(end)}`;
   }
   if (f.from !== null) return `since ${fmt(f.from)}`;
   return `until ${fmt(f.to! - 1)}`;
@@ -186,6 +199,12 @@ function DatePopover({
     setOpen(false);
   }
 
+  function setRecentHours(hours: number) {
+    const to = Math.floor(Date.now() / USAGE_BUCKET_MS) * USAGE_BUCKET_MS;
+    setFilters({ ...filters, from: to - hours * 3600_000, to });
+    setOpen(false);
+  }
+
   return (
     <div className="filter-control" ref={ref}>
       <div onClick={() => setOpen(!open)} style={{ cursor: 'pointer', display: 'inline' }}>
@@ -193,7 +212,10 @@ function DatePopover({
       </div>
       {open && (
         <div className="filter-popover" style={{ minWidth: 260 }}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 10 }}>
+          <div className="date-presets">
+            <PresetBtn onClick={() => setRecentHours(1)}>1 hour</PresetBtn>
+            <PresetBtn onClick={() => setRecentHours(6)}>6 hours</PresetBtn>
+            <PresetBtn onClick={() => setRecentHours(24)}>24 hours</PresetBtn>
             <PresetBtn onClick={() => setRange(0)}>Today</PresetBtn>
             <PresetBtn onClick={() => setRange(7)}>7 days</PresetBtn>
             <PresetBtn onClick={() => setRange(30)}>30 days</PresetBtn>

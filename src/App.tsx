@@ -19,6 +19,7 @@ import { Hero } from './components/Hero';
 import { HourGrid } from './components/HourGrid';
 import { SessionDetail } from './components/SessionDetail';
 import { SessionTable } from './components/SessionTable';
+import { RequestTable } from './components/RequestTable';
 import type { SessionInfo } from './aggregate';
 import { StatStrip } from './components/StatStrip';
 import { Timeline } from './components/Timeline';
@@ -271,6 +272,17 @@ function Dashboard({
   const sess = useMemo(() => sessions(filtered, data.sessionMeta), [filtered, data.sessionMeta]);
   const [selectedSession, setSelectedSession] = useState<SessionInfo | null>(null);
 
+  function selectSessionById(sessionId: string) {
+    const visibleSession = sess.find((session) => session.s === sessionId);
+    if (visibleSession) {
+      setSelectedSession(visibleSession);
+      return;
+    }
+    const rows = data.entries.filter((entry) => entry.s === sessionId);
+    const fallback = sessions(rows, data.sessionMeta)[0];
+    if (fallback) setSelectedSession(fallback);
+  }
+
   const contextLine = useMemo(() => {
     if (filtered.length === 0) return 'no entries match filters';
     const first = new Date(filtered[0]!.t);
@@ -373,6 +385,15 @@ function Dashboard({
 
       <div className="section">
         <SessionTable sessions={sess} onSelect={setSelectedSession} />
+      </div>
+
+      <div className="section">
+        <RequestTable
+          filters={filters}
+          generatedAt={data.generatedAt}
+          sessionMeta={data.sessionMeta}
+          onSelectSession={selectSessionById}
+        />
       </div>
 
       {selectedSession && (

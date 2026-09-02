@@ -18,6 +18,16 @@ export type Entry = {
   src?: 'cc' | 'codex' | 'opencode' | 'pi';
 };
 
+export type RankedRequest = Entry & {
+  /** Authoritative per-request cost in USD, computed by the server. */
+  c: number;
+};
+
+export type RequestList = {
+  entries: RankedRequest[];
+  total: number;
+};
+
 /**
  * What `/api/data` ships: every request in a 5-minute bucket that shares
  * session + model + fast-mode + source, collapsed into one row. Costs are

@@ -31,7 +31,7 @@ function nano(v: number): number {
  * dataset). Callers get exact costs in `ci`/`co`/`cwc`/`crc` and must not
  * re-derive them from the token counts.
  */
-export function rollupEntries(entries: Entry[]): UsageRow[] {
+export function rollupEntries(entries: Entry[], requestCosts?: Float64Array): UsageRow[] {
   // Two-level map instead of one string key: hashing the session id once and
   // packing the rest into an integer is ~2x faster over a million entries.
   const bySession = new Map<string, Map<number, UsageRow>>();
@@ -75,6 +75,9 @@ export function rollupEntries(entries: Entry[]): UsageRow[] {
     row.cr += e.cr;
 
     const c = costBreakdownForEntry(e);
+    if (requestCosts) {
+      requestCosts[k] = c.input + c.output + c.cacheWrite + c.cacheRead;
+    }
     row.ci += c.input;
     row.co += c.output;
     row.cwc += c.cacheWrite;
