@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import type {
-  Entry,
-  SessionTranscript,
-  TranscriptEntry,
-  TranscriptStream,
-  TranscriptTokens,
+import {
+  HARNESS_LABELS,
+  type Entry,
+  type SessionTranscript,
+  type TranscriptEntry,
+  type TranscriptStream,
+  type TranscriptTokens,
 } from '../types';
 import type { SessionInfo } from '../aggregate';
 import { costForEntry } from '../pricing';
@@ -856,10 +857,7 @@ function fmtTime(t: number): string {
 }
 
 function providerLabel(provider: SessionTranscript['provider']): string {
-  if (provider === 'cc') return 'Claude Code';
-  if (provider === 'codex') return 'Codex';
-  if (provider === 'pi') return 'Pi';
-  return 'OpenCode';
+  return HARNESS_LABELS[provider];
 }
 
 function roleShort(role: TranscriptEntry['role']): string {

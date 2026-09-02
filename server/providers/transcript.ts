@@ -480,7 +480,7 @@ function entryFromBlock({
     isSidechain,
     isCompactSummary,
     t: timestamp,
-    text: textFromUnknown(block),
+    text: stringField(block, 'text') ?? textFromUnknown(block),
     model,
     usageKey,
     fast,

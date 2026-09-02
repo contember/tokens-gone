@@ -36,7 +36,7 @@ export type Entry = {
    * pay the extra byte. Useful for routing pricing rules and (eventually)
    * filtering in the UI.
    */
-  src?: 'cc' | 'codex' | 'opencode' | 'pi';
+  src?: 'cc' | 'codex' | 'opencode' | 'pi' | 'omp';
   /** Explicit USD cost components from providers that log authoritative cost. */
   ci?: number;
   co?: number;
@@ -59,7 +59,7 @@ export type SessionMeta = {
   agentRole?: string;
 };
 
-export type TranscriptProvider = 'cc' | 'codex' | 'opencode' | 'pi';
+export type TranscriptProvider = 'cc' | 'codex' | 'opencode' | 'pi' | 'omp';
 
 export type TranscriptRole = 'user' | 'assistant' | 'system' | 'tool' | 'event';
 
@@ -167,7 +167,7 @@ export type UsageRow = {
   s: string;
   m: string;
   f: 0 | 1;
-  src?: 'cc' | 'codex' | 'opencode' | 'pi';
+  src?: 'cc' | 'codex' | 'opencode' | 'pi' | 'omp';
   /** Summed tokens. */
   i: number;
   o: number;

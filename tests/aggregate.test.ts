@@ -80,11 +80,14 @@ describe('aggregate', () => {
     const cc = entry({ s: 'cc-1' }); // no src → cc
     const codex = entry({ s: 'cx-1', src: 'codex' });
     const pi = entry({ s: 'pi-1', src: 'pi' });
-    expect(applyFilters([cc, codex, pi], { ...EMPTY, harnesses: new Set(['cc']) }).length).toBe(1);
-    expect(applyFilters([cc, codex, pi], { ...EMPTY, harnesses: new Set(['codex']) }).length).toBe(1);
-    expect(applyFilters([cc, codex, pi], { ...EMPTY, harnesses: new Set(['pi']) }).length).toBe(1);
-    expect(applyFilters([cc, codex, pi], { ...EMPTY, harnesses: new Set(['cc', 'codex']) }).length).toBe(2);
-    expect(applyFilters([cc, codex, pi], EMPTY).length).toBe(3); // empty set = all
+    const omp = entry({ s: 'omp-1', src: 'omp' });
+    const entries = [cc, codex, pi, omp];
+    expect(applyFilters(entries, { ...EMPTY, harnesses: new Set(['cc']) }).length).toBe(1);
+    expect(applyFilters(entries, { ...EMPTY, harnesses: new Set(['codex']) }).length).toBe(1);
+    expect(applyFilters(entries, { ...EMPTY, harnesses: new Set(['pi']) }).length).toBe(1);
+    expect(applyFilters(entries, { ...EMPTY, harnesses: new Set(['omp']) }).length).toBe(1);
+    expect(applyFilters(entries, { ...EMPTY, harnesses: new Set(['cc', 'codex']) }).length).toBe(2);
+    expect(applyFilters(entries, EMPTY).length).toBe(4); // empty set = all
   });
 
   it('groupBy sorts by cost descending', () => {

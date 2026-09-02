@@ -14,7 +14,7 @@ import type { Entry, UsageRow } from './types.ts';
  * local-time hour boundary — every timezone offset is a multiple of 15min. */
 export const ROLLUP_BUCKET_MS = 5 * 60_000;
 
-const SRC_IDS: Record<string, number> = { cc: 0, codex: 1, opencode: 2, pi: 3 };
+const SRC_IDS: Record<string, number> = { cc: 0, codex: 1, opencode: 2, pi: 3, omp: 4 };
 
 /** Costs are fractions of a cent; keeping full float precision would add
  * ~1.3MB of trailing digits to the payload for no visible accuracy. */
@@ -51,8 +51,8 @@ export function rollupEntries(entries: Entry[], requestCosts?: Float64Array): Us
     }
     const key =
       Math.floor(e.t / ROLLUP_BUCKET_MS) * 65536 +
-      modelId * 8 +
-      (e.f ? 4 : 0) +
+      modelId * 16 +
+      (e.f ? 8 : 0) +
       (SRC_IDS[e.src ?? 'cc'] ?? 0);
 
     let row = inner.get(key);

@@ -1,10 +1,9 @@
 /**
- * Pi coding agent provider.
+ * Pi-compatible JSONL provider shared by Pi and Oh My Pi.
  *
- * Reads `~/.pi/agent/sessions/**\/*.jsonl` — one JSONL per Pi session.
- * Pi records a `session` entry followed by `message` entries. Assistant
- * messages carry `usage.{input, output, cacheRead, cacheWrite, cacheWrite1h}`
- * and, when available, authoritative USD cost components in `usage.cost`.
+ * Both harnesses record a `session` entry followed by `message` entries.
+ * Assistant messages carry `usage.{input, output, cacheRead, cacheWrite,
+ * cacheWrite1h}` and, when available, authoritative USD cost components.
  *
  * Token mapping into our Entry shape:
  *   i  = usage.input
@@ -12,8 +11,8 @@
  *   cc = usage.cacheWrite + usage.cacheWrite1h
  *   cr = usage.cacheRead
  *
- * Pi can route to many model providers, so we preserve its logged cost
- * components instead of depending solely on this app's static pricing table.
+ * These harnesses can route to many model providers, so we preserve logged
+ * cost components instead of depending solely on the static pricing table.
  */
 
 import { stat } from 'node:fs/promises';
@@ -24,6 +23,7 @@ import { homedir } from 'node:os';
 import type { Entry, SessionMeta, SessionTranscript, TranscriptEntry } from '../types.ts';
 import type {
   Provider,
+  ProviderId,
   ProviderScanOptions,
   ProviderScanResult,
   FileCacheRecord,
@@ -55,6 +55,13 @@ import {
 
 const CACHE_VERSION = 1;
 const MAX_PROMPT_CHARS = 200;
+
+export type PiJsonlProviderConfig = {
+  id: Extract<ProviderId, 'pi' | 'omp'>;
+  label: string;
+  defaultDataDir(): string;
+  defaultCachePath(): string;
+};
 
 type PiExtra = {
   sessionId?: string;
@@ -233,6 +240,7 @@ function dedupEntries(entries: Entry[]): Entry[] {
 async function parseFile(
   path: string,
   sessionsDir: string,
+  providerId: PiJsonlProviderConfig['id'],
   fromOffset: number,
   primed?: {
     sessionId?: string;
@@ -260,7 +268,8 @@ async function parseFile(
     const interesting =
       line.indexOf('"type":"session"') !== -1 ||
       line.indexOf('"type":"message"') !== -1 ||
-      line.indexOf('"type":"session_info"') !== -1;
+      line.indexOf('"type":"session_info"') !== -1 ||
+      line.indexOf('"type":"title"') !== -1;
     if (!interesting) continue;
 
     let json: any;
@@ -282,12 +291,14 @@ async function parseFile(
       continue;
     }
 
-    if (type === 'session_info') {
-      const name = typeof json.name === 'string'
-        ? json.name.trim()
-        : typeof json.sessionInfo?.name === 'string'
-          ? json.sessionInfo.name.trim()
-          : undefined;
+    if (type === 'session_info' || type === 'title') {
+      const name = type === 'title'
+        ? typeof json.title === 'string' ? json.title.trim() : undefined
+        : typeof json.name === 'string'
+          ? json.name.trim()
+          : typeof json.sessionInfo?.name === 'string'
+            ? json.sessionInfo.name.trim()
+            : undefined;
       if (name) summary = name.slice(0, MAX_PROMPT_CHARS);
       continue;
     }
@@ -331,7 +342,7 @@ async function parseFile(
       cc: cacheWrite,
       cr: cacheRead,
       f: 0,
-      src: 'pi',
+      src: providerId,
     };
     addCostFields(entry, usage.cost);
 
@@ -347,10 +358,13 @@ async function parseFile(
   return { entries, lines, sessionId, firstPrompt, summary, projectName, cwd };
 }
 
-async function scanPi(options: ProviderScanOptions = {}): Promise<ProviderScanResult> {
+async function scanPiJsonl(
+  config: PiJsonlProviderConfig,
+  options: ProviderScanOptions = {},
+): Promise<ProviderScanResult> {
   const t0 = performance.now();
-  const sessionsDir = options.dataDir ?? defaultDataDir();
-  const cachePath = options.cachePath ?? defaultCachePath();
+  const sessionsDir = options.dataDir ?? config.defaultDataDir();
+  const cachePath = options.cachePath ?? config.defaultCachePath();
   const useCache = options.useCache !== false;
   const concurrency = options.concurrency ?? 16;
 
@@ -401,7 +415,7 @@ async function scanPi(options: ProviderScanOptions = {}): Promise<ProviderScanRe
       }
 
       if (state.kind === 'appended') {
-        const parsed = await parseFile(info.path, sessionsDir, state.fromOffset, {
+        const parsed = await parseFile(info.path, sessionsDir, config.id, state.fromOffset, {
           sessionId: state.cached.sessionId,
           projectName: state.cached.projectName,
           firstPrompt: state.cached.firstPrompt,
@@ -432,7 +446,7 @@ async function scanPi(options: ProviderScanOptions = {}): Promise<ProviderScanRe
         return;
       }
 
-      const parsed = await parseFile(info.path, sessionsDir, 0);
+      const parsed = await parseFile(info.path, sessionsDir, config.id, 0);
       parsedLines += parsed.lines;
       const record: FileCacheRecord<PiExtra> = {
         path: info.path,
@@ -473,17 +487,18 @@ async function scanPi(options: ProviderScanOptions = {}): Promise<ProviderScanRe
   };
 }
 
-async function readPiTranscript(
+async function readPiJsonlTranscript(
+  config: PiJsonlProviderConfig,
   sessionId: string,
   options: ProviderScanOptions = {},
 ): Promise<SessionTranscript> {
-  const defaultDir = defaultDataDir();
+  const defaultDir = config.defaultDataDir();
   const sessionsDir = options.dataDir ?? defaultDir;
-  const cachePath = options.cachePath ?? defaultCachePath();
+  const cachePath = options.cachePath ?? config.defaultCachePath();
   const concurrency = options.concurrency ?? 16;
   const useCacheIndex =
     options.useCache !== false && (options.cachePath !== undefined || sessionsDir === defaultDir);
-  if (!existsSync(sessionsDir)) return emptyPiTranscript(sessionId);
+  if (!existsSync(sessionsDir)) return emptyPiTranscript(config.id, sessionId);
 
   const files = await transcriptFiles(sessionsDir, cachePath, sessionId, useCacheIndex);
   const streams: SessionTranscript['streams'] = [];
@@ -520,7 +535,7 @@ async function readPiTranscript(
   sortStreams(streams);
   return {
     sessionId,
-    provider: 'pi',
+    provider: config.id,
     streams,
     sourceFiles: streams.length,
     totalEntries: countEntries(streams),
@@ -548,10 +563,13 @@ async function transcriptFiles(
   return listJsonlFiles(sessionsDir);
 }
 
-function emptyPiTranscript(sessionId: string): SessionTranscript {
+function emptyPiTranscript(
+  providerId: PiJsonlProviderConfig['id'],
+  sessionId: string,
+): SessionTranscript {
   return {
     sessionId,
-    provider: 'pi',
+    provider: providerId,
     streams: [],
     sourceFiles: 0,
     totalEntries: 0,
@@ -583,17 +601,19 @@ function piLineEntries(
     }];
   }
 
-  if (type === 'session_info') {
+  if (type === 'session_info' || type === 'title') {
     return [{
       id: idBase,
       role: 'system',
       kind: 'summary',
-      title: 'Session info',
+      title: type === 'title' ? 'Session title' : 'Session info',
       rawType: type,
       isSidechain: false,
       isCompactSummary: false,
       t: timestamp,
-      text: stringField(json, 'name') ?? textFromUnknown(recordField(json, 'sessionInfo') ?? json),
+      text: type === 'title'
+        ? stringField(json, 'title')
+        : stringField(json, 'name') ?? textFromUnknown(recordField(json, 'sessionInfo') ?? json),
       images: imagesFromUnknown(recordField(json, 'sessionInfo') ?? json),
     }];
   }
@@ -642,14 +662,32 @@ function piLineEntries(
   }];
 }
 
-export const piProvider: Provider = {
+export function createPiJsonlProvider(config: PiJsonlProviderConfig) {
+  return {
+    id: config.id,
+    label: config.label,
+    defaultDataDir: config.defaultDataDir,
+    defaultCachePath: config.defaultCachePath,
+    detect: (dir = config.defaultDataDir()) => existsSync(dir),
+    scan: (options?: ProviderScanOptions) => scanPiJsonl(config, options),
+    readTranscript: (sessionId: string, options?: ProviderScanOptions) =>
+      readPiJsonlTranscript(config, sessionId, options),
+  } satisfies Provider;
+}
+
+const PI_CONFIG: PiJsonlProviderConfig = {
   id: 'pi',
   label: 'Pi',
   defaultDataDir,
   defaultCachePath,
-  detect: (dir = defaultDataDir()) => existsSync(dir),
-  scan: scanPi,
-  readTranscript: readPiTranscript,
 };
 
-export { readPiTranscript as _readPiTranscript, scanPi as _scanPi };
+export const piProvider = createPiJsonlProvider(PI_CONFIG);
+
+export const _scanPi = (options?: ProviderScanOptions): Promise<ProviderScanResult> =>
+  scanPiJsonl(PI_CONFIG, options);
+
+export const _readPiTranscript = (
+  sessionId: string,
+  options?: ProviderScanOptions,
+): Promise<SessionTranscript> => readPiJsonlTranscript(PI_CONFIG, sessionId, options);

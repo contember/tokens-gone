@@ -21,6 +21,7 @@ const HARNESS_LABELS: Record<string, string> = {
   codex: 'Codex',
   opencode: 'OpenCode',
   pi: 'Pi',
+  omp: 'Oh My Pi',
 };
 
 function costForEntry(e: Entry): number {

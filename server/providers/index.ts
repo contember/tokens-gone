@@ -13,12 +13,14 @@ import { claudeProvider } from './claude.ts';
 import { codexProvider } from './codex.ts';
 import { openCodeProvider } from './opencode.ts';
 import { piProvider } from './pi.ts';
+import { ompProvider } from './omp.ts';
 
 export const PROVIDERS: readonly Provider[] = [
   claudeProvider,
   codexProvider,
   openCodeProvider,
   piProvider,
+  ompProvider,
 ];
 
 export type { Provider, ProviderId, ProviderScanResult, ProviderScanStats } from './types.ts';

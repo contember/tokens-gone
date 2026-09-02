@@ -1,8 +1,8 @@
 # tokens-gone
 
 Local web dashboard for AI coding agent token usage and cost. Reads Claude
-Code, Codex, OpenCode, and Pi session logs, aggregates tokens and dollars, and
-lets you slice the data interactively.
+Code, Codex, OpenCode, Pi, and Oh My Pi session logs, aggregates tokens and
+cost, and lets you slice the data interactively.
 
 ## Run
 
@@ -29,10 +29,15 @@ with thousands of session files.
 - `CLAUDE_CONFIG_DIR` — override the Claude data dir (default `~/.claude`).
 - `CODEX_HOME` — override the Codex data dir (default `~/.codex`).
 - `XDG_DATA_HOME` — where OpenCode keeps `opencode/opencode.db` (default
-  `~/.local/share`). Reading it needs Node 22.5+ for `node:sqlite`; on older
-  Node the other providers still work and OpenCode is skipped.
+  `~/.local/share`) and where Oh My Pi may keep XDG-migrated sessions. Reading
+  OpenCode needs Node 22.5+ for `node:sqlite`; on older Node versions the other
+  providers still work and OpenCode is skipped.
 - `PI_CODING_AGENT_DIR` — override the Pi agent dir (default `~/.pi/agent`).
 - `PI_CODING_AGENT_SESSION_DIR` — override the Pi sessions dir directly.
+- `OMP_CODING_AGENT_DIR` — override the Oh My Pi agent dir (default
+  `~/.omp/agent`).
+- `OMP_CODING_AGENT_SESSION_DIR` — override the Oh My Pi sessions dir directly.
+- `OMP_PROFILE` — select an Oh My Pi profile.
 - `PORT` — same as `--port`.
 
 ## Why

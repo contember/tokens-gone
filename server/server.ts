@@ -462,7 +462,13 @@ function numberParam(value: string | null): number | null | undefined {
 function requestHarnesses(values: string[]): Set<RequestHarness> | null {
   const harnesses = new Set<RequestHarness>();
   for (const value of values) {
-    if (value !== 'cc' && value !== 'codex' && value !== 'opencode' && value !== 'pi') {
+    if (
+      value !== 'cc' &&
+      value !== 'codex' &&
+      value !== 'opencode' &&
+      value !== 'pi' &&
+      value !== 'omp'
+    ) {
       return null;
     }
     harnesses.add(value);

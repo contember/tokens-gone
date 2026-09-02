@@ -2,7 +2,7 @@
  * Provider contract.
  *
  * A provider is an adapter for a single AI coding harness (Claude Code,
- * Codex, Pi, OpenCode). Each provider is responsible for:
+ * Codex, Pi, Oh My Pi, OpenCode). Each provider is responsible for:
  *  - knowing where its data lives on disk
  *  - detecting whether the user actually uses that tool
  *  - parsing its raw log/db format into the shared `Entry` shape
@@ -16,7 +16,7 @@
 import type { Entry, SessionMeta, SessionTranscript } from '../types.ts';
 
 /** Identifier baked into the `Entry.src` field. */
-export type ProviderId = 'cc' | 'codex' | 'opencode' | 'pi';
+export type ProviderId = 'cc' | 'codex' | 'opencode' | 'pi' | 'omp';
 
 export type ProviderScanOptions = {
   /** Override the default data directory (env-var or user-set). */

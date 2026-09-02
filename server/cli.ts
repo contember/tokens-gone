@@ -27,9 +27,12 @@ Environment:
   PORT                          Same as --port
   CLAUDE_CONFIG_DIR             Override the Claude data dir (default ~/.claude)
   CODEX_HOME                    Override the Codex data dir (default ~/.codex)
-  XDG_DATA_HOME                 Where OpenCode lives (default ~/.local/share)
+  XDG_DATA_HOME                 Where OpenCode and XDG-based OMP data live
   PI_CODING_AGENT_DIR           Override the Pi agent dir (default ~/.pi/agent)
   PI_CODING_AGENT_SESSION_DIR   Override the Pi sessions dir directly
+  OMP_CODING_AGENT_DIR          Override the OMP agent dir (default ~/.omp/agent)
+  OMP_CODING_AGENT_SESSION_DIR  Override the OMP sessions dir directly
+  OMP_PROFILE                   Select an OMP profile
 `;
 
 function parseArgs(argv: string[]): Args {

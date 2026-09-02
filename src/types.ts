@@ -15,7 +15,7 @@ export type Entry = {
   cwc?: number;
   crc?: number;
   /** Source of the entry. Missing means Claude Code. */
-  src?: 'cc' | 'codex' | 'opencode' | 'pi';
+  src?: 'cc' | 'codex' | 'opencode' | 'pi' | 'omp';
 };
 
 export type RankedRequest = Entry & {
@@ -67,7 +67,7 @@ export type SessionMeta = {
   agentRole?: string;
 };
 
-export type TranscriptProvider = 'cc' | 'codex' | 'opencode' | 'pi';
+export type TranscriptProvider = 'cc' | 'codex' | 'opencode' | 'pi' | 'omp';
 
 export type TranscriptRole = 'user' | 'assistant' | 'system' | 'tool' | 'event';
 
@@ -149,7 +149,7 @@ export type ProviderStats = {
 };
 
 export type ProviderInfo = {
-  id: 'cc' | 'codex' | 'opencode' | 'pi';
+  id: 'cc' | 'codex' | 'opencode' | 'pi' | 'omp';
   label: string;
   dataDir: string;
   cachePath: string;
@@ -193,7 +193,7 @@ export type ApiData = {
 };
 
 /** Tool that produced an entry. `'cc'` = Claude Code, default for legacy entries. */
-export type Harness = 'cc' | 'codex' | 'opencode' | 'pi';
+export type Harness = 'cc' | 'codex' | 'opencode' | 'pi' | 'omp';
 
 export type Filters = {
   /** ms since epoch — inclusive. */
@@ -215,6 +215,7 @@ export const HARNESS_LABELS: Record<Harness, string> = {
   codex: 'Codex',
   opencode: 'OpenCode',
   pi: 'Pi',
+  omp: 'Oh My Pi',
 };
 
 export type Bucket =

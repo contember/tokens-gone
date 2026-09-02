@@ -49,8 +49,9 @@ describe('rollupEntries', () => {
       entry({ f: 1 }),
       entry({ s: 'sess-2' }),
       entry({ src: 'codex', m: 'gpt-5.4' }),
+      entry({ src: 'omp' }),
     ]);
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(7);
     expect(rows.every((r) => r.n === 1)).toBe(true);
   });
 
