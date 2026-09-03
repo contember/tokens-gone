@@ -32,7 +32,21 @@ const SCHEMA = `
     time_created integer not null, time_updated integer not null, data text not null
   );`;
 
-function addSession(id: string, over: { parent_id?: string; title?: string } = {}): void {
+const V2_SCHEMA = `
+  create table session_v2 (
+    id text primary key, parent_id text, directory text not null,
+    title text not null, time_created integer not null, time_updated integer not null
+  );
+  create table session_message (
+    id text primary key, session_id text not null, type text not null, seq integer not null,
+    time_created integer not null, time_updated integer not null, data text not null
+  );`;
+
+function addSession(
+  id: string,
+  over: { parent_id?: string; title?: string } = {},
+  target: Database = db,
+): void {
   const row = {
     id,
     parent_id: null as string | null,
@@ -42,24 +56,70 @@ function addSession(id: string, over: { parent_id?: string; title?: string } = {
     time_updated: 1788000000000,
     ...over,
   };
-  db.query(
+  target.query(
     `insert into session (id, parent_id, directory, title, time_created, time_updated)
      values (?, ?, ?, ?, ?, ?)`,
   ).run(row.id, row.parent_id, row.directory, row.title, row.time_created, row.time_updated);
 }
 
-function addMessage(id: string, session: string, t: number, data: Record<string, unknown>): void {
-  db.query(
+function addMessage(
+  id: string,
+  session: string,
+  t: number,
+  data: Record<string, unknown>,
+  target: Database = db,
+): void {
+  target.query(
     `insert into message (id, session_id, time_created, time_updated, data)
      values (?, ?, ?, ?, ?)`,
   ).run(id, session, t, t, JSON.stringify(data));
 }
 
-function addPart(id: string, messageId: string, session: string, t: number, data: unknown): void {
-  db.query(
+function addPart(
+  id: string,
+  messageId: string,
+  session: string,
+  t: number,
+  data: unknown,
+  target: Database = db,
+): void {
+  target.query(
     `insert into part (id, message_id, session_id, time_created, time_updated, data)
      values (?, ?, ?, ?, ?, ?)`,
   ).run(id, messageId, session, t, t, JSON.stringify(data));
+}
+
+function addV2Session(
+  target: Database,
+  id: string,
+  over: { parentId?: string; title?: string; updated?: number } = {},
+): void {
+  target.query(
+    `insert into session_v2 (id, parent_id, directory, title, time_created, time_updated)
+     values (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    over.parentId ?? null,
+    '/home/me/projects/tokens-gone',
+    over.title ?? 'OpenCode V2 session',
+    1788000100000,
+    over.updated ?? 1788000100000,
+  );
+}
+
+function addV2Message(
+  target: Database,
+  id: string,
+  session: string,
+  type: string,
+  seq: number,
+  t: number,
+  data: Record<string, unknown>,
+): void {
+  target.query(
+    `insert into session_message (id, session_id, type, seq, time_created, time_updated, data)
+     values (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, session, type, seq, t, t, JSON.stringify(data));
 }
 
 function assistant(over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -233,5 +293,160 @@ describe('opencode transcript', () => {
     const t = await readOpenCodeTranscript('ses_unknown', { dataDir });
     expect(t.missingRaw).toBe(true);
     expect(t.streams.length).toBe(0);
+  });
+});
+
+describe('opencode V2', () => {
+  it('merges V1 and V2 messages by id and renders native V2 transcripts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokens-gone-opencode-v2-'));
+    const v2DataDir = join(root, 'opencode');
+    const v2Cache = join(root, 'cache.json');
+    await mkdir(v2DataDir, { recursive: true });
+    const target = new Database(join(v2DataDir, 'opencode.db'), { create: true });
+
+    try {
+      target.run(`${SCHEMA}${V2_SCHEMA}`);
+
+      addSession('ses_migrated', { title: 'Legacy title' }, target);
+      addMessage('msg_shared_user', 'ses_migrated', 1788000005000, { role: 'user' }, target);
+      addPart('prt_shared_user', 'msg_shared_user', 'ses_migrated', 1788000005000, {
+        type: 'text',
+        text: 'legacy prompt',
+      }, target);
+      addMessage('msg_shared', 'ses_migrated', 1788000010000, assistant({
+        tokens: { input: 11, output: 2, reasoning: 0, cache: { read: 1, write: 0 } },
+      }), target);
+      addPart('prt_shared', 'msg_shared', 'ses_migrated', 1788000010000, {
+        type: 'text',
+        text: 'legacy response',
+      }, target);
+
+      addV2Session(target, 'ses_migrated', {
+        title: 'Migrated title',
+        updated: 1788000120000,
+      });
+      addV2Message(target, 'msg_shared_user', 'ses_migrated', 'user', 1, 1788000005000, {
+        text: 'migrated prompt',
+        time: { created: 1788000005000 },
+      });
+      addV2Message(target, 'msg_shared', 'ses_migrated', 'assistant', 2, 1788000010000, {
+        agent: 'build',
+        model: { id: 'duplicate-model', providerID: 'test' },
+        cost: 0,
+        tokens: { input: 999, output: 999, reasoning: 0, cache: { read: 0, write: 0 } },
+        time: { created: 1788000010000, completed: 1788000011000 },
+        content: [{ type: 'text', text: 'duplicate response' }],
+      });
+      addV2Message(target, 'msg_continued', 'ses_migrated', 'assistant', 3, 1788000110000, {
+        agent: 'build',
+        model: { id: 'claude-sonnet-4-5', providerID: 'anthropic' },
+        cost: 0,
+        tokens: { input: 7, output: 3, reasoning: 0, cache: { read: 2, write: 1 } },
+        time: { created: 1788000110000, completed: 1788000111000 },
+        content: [{
+          type: 'tool',
+          id: 'tool_1',
+          name: 'shell',
+          state: {
+            status: 'completed',
+            input: { command: 'pwd' },
+            content: [{ type: 'text', text: '/home/me/projects/tokens-gone' }],
+          },
+        }],
+      });
+
+      addV2Session(target, 'ses_v2', { title: 'Native V2' });
+      addV2Message(target, 'msg_v2_user', 'ses_v2', 'user', 1, 1788000100000, {
+        text: 'native prompt',
+        time: { created: 1788000100000 },
+      });
+      addV2Message(target, 'msg_v2_assistant', 'ses_v2', 'assistant', 2, 1788000105000, {
+        agent: 'review',
+        model: { id: 'gpt-5.2-codex', providerID: 'openai' },
+        cost: 0,
+        tokens: { input: 13, output: 5, reasoning: 2, cache: { read: 4, write: 0 } },
+        time: { created: 1788000105000, completed: 1788000106000 },
+        content: [
+          { type: 'reasoning', text: 'checking' },
+          { type: 'text', text: 'native response' },
+        ],
+      });
+
+      const result = await scanOpenCode({ dataDir: v2DataDir, cachePath: v2Cache });
+      expect(result.stats.files).toBe(2);
+      expect(result.entries.length).toBe(3);
+
+      const shared = result.entries.filter((entry) => entry.h === 'opencode:msg_shared');
+      expect(shared.length).toBe(1);
+      expect(shared[0]?.i).toBe(11);
+      expect(shared[0]?.m).toBe('claude-sonnet-4-5');
+
+      const continued = result.entries.find((entry) => entry.h === 'opencode:msg_continued');
+      expect(continued?.i).toBe(7);
+      expect(continued?.cr).toBe(2);
+      expect(continued?.cc).toBe(1);
+
+      const native = result.entries.find((entry) => entry.h === 'opencode:msg_v2_assistant');
+      expect(native?.m).toBe('gpt-5.2-codex');
+      expect(native?.i).toBe(13);
+      expect(native?.o).toBe(5);
+      expect(result.sessionMeta.ses_migrated?.summary).toBe('Migrated title');
+      expect(result.sessionMeta.ses_migrated?.firstPrompt).toBe('migrated prompt');
+      expect(result.sessionMeta.ses_v2).toEqual({
+        summary: 'Native V2',
+        firstPrompt: 'native prompt',
+        agentRole: 'review',
+      });
+
+      const transcript = await readOpenCodeTranscript('ses_migrated', { dataDir: v2DataDir });
+      const transcriptEntries = transcript.streams[0]?.entries ?? [];
+      expect(transcriptEntries.some((entry) => entry.text === 'duplicate response')).toBe(false);
+      expect(transcriptEntries.some((entry) => entry.text === 'legacy response')).toBe(true);
+      expect(transcriptEntries.find((entry) => entry.kind === 'tool_use')?.toolName).toBe('shell');
+      expect(transcriptEntries.find((entry) => entry.kind === 'tool_result')?.text)
+        .toBe('/home/me/projects/tokens-gone');
+
+      const nativeTranscript = await readOpenCodeTranscript('ses_v2', { dataDir: v2DataDir });
+      const nativeEntries = nativeTranscript.streams[0]?.entries ?? [];
+      expect(nativeEntries.some((entry) => entry.role === 'user' && entry.text === 'native prompt')).toBe(true);
+      expect(nativeEntries.some((entry) => entry.kind === 'thinking' && entry.text === 'checking')).toBe(true);
+      expect(nativeEntries.some((entry) => entry.role === 'assistant' && entry.text === 'native response')).toBe(true);
+    } finally {
+      await flushCacheWrites();
+      target.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a database with only V2 tables', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokens-gone-opencode-v2-only-'));
+    const v2DataDir = join(root, 'opencode');
+    await mkdir(v2DataDir, { recursive: true });
+    const target = new Database(join(v2DataDir, 'opencode.db'), { create: true });
+
+    try {
+      target.run(V2_SCHEMA);
+      addV2Session(target, 'ses_v2_only');
+      addV2Message(target, 'msg_v2_only', 'ses_v2_only', 'assistant', 1, 1788000105000, {
+        agent: 'build',
+        model: { id: 'claude-sonnet-4-5', providerID: 'anthropic' },
+        cost: 0,
+        tokens: { input: 21, output: 8, reasoning: 1, cache: { read: 3, write: 0 } },
+        time: { created: 1788000105000, completed: 1788000106000 },
+        content: [{ type: 'text', text: 'V2 only response' }],
+      });
+
+      const result = await scanOpenCode({ dataDir: v2DataDir, useCache: false });
+      expect(result.stats.files).toBe(1);
+      expect(result.entries).toHaveLength(1);
+      expect(result.entries[0]?.i).toBe(21);
+
+      const transcript = await readOpenCodeTranscript('ses_v2_only', { dataDir: v2DataDir });
+      expect(transcript.missingRaw).toBe(false);
+      expect(transcript.streams[0]?.entries.some((entry) => entry.text === 'V2 only response')).toBe(true);
+    } finally {
+      target.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

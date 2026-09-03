@@ -3,7 +3,10 @@
  *
  * Reads `$XDG_DATA_HOME/opencode/opencode.db` (default
  * `~/.local/share/opencode`) — OpenCode keeps sessions in SQLite, not JSONL.
- * One `message` row per API call; assistant rows carry
+ * OpenCode V1 uses `session` / `message` / `part`; V2 uses `session_v2` /
+ * `session_message`. V2 migrates most V1 messages into its projection, so the
+ * provider keeps V1 rows and adds only V2 message IDs not already present.
+ * One assistant row per API call carries
  * `tokens.{input,output,cache.{read,write}}` plus a `cost` that is non-zero
  * only when OpenCode knows the model's price (API-key routing — subscription
  * providers such as GitHub Copilot log 0).
@@ -54,12 +57,13 @@ import {
   stringField,
 } from './transcript.ts';
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const DB_FILE = 'opencode.db';
 const MAX_PROMPT_CHARS = 200;
 
 type OpenCodeExtra = {
   sessionId: string;
+  storageVersion: 1 | 2;
   summary?: string;
   firstPrompt?: string;
   parentSessionId?: string;
@@ -72,28 +76,40 @@ type SessionRow = {
   directory: string;
   title?: string;
   timeUpdated: number;
+  storageVersion: 1 | 2;
 };
 
 type MessageStat = { messages: number; updated: number };
 
-const SESSIONS_SQL =
+type OpenCodeLayout = { legacy: boolean; v2: boolean };
+
+const LEGACY_SESSIONS_SQL =
   'select id, parent_id, directory, title, time_updated from session';
 
-const MESSAGE_STATS_SQL =
+const V2_SESSIONS_SQL =
+  'select id, parent_id, directory, title, time_updated from session_v2';
+
+const LEGACY_MESSAGE_STATS_SQL =
   'select session_id, count(*) as messages, max(time_updated) as updated from message group by session_id';
 
-const SESSION_MESSAGES_SQL =
+const LEGACY_SESSION_MESSAGES_SQL =
   'select id, time_created, data from message where session_id = ? order by time_created, id';
 
-const SESSION_PARTS_SQL =
+const LEGACY_SESSION_PARTS_SQL =
   'select message_id, data from part where session_id = ? order by time_created, id';
 
-const FIRST_PROMPT_SQL = `select json_extract(p.data, '$.text') as text
+const LEGACY_FIRST_PROMPT_SQL = `select json_extract(p.data, '$.text') as text
   from message m join part p on p.message_id = m.id
   where m.session_id = ?
     and json_extract(m.data, '$.role') = 'user'
     and json_extract(p.data, '$.type') = 'text'
   order by m.time_created, p.id
+  limit 1`;
+
+const V2_FIRST_PROMPT_SQL = `select json_extract(data, '$.text') as text
+  from session_message
+  where session_id = ? and type = 'user'
+  order by seq
   limit 1`;
 
 type SqlRow = Record<string, unknown>;
@@ -183,7 +199,18 @@ function trimmed(value: string | undefined): string | undefined {
   return text ? text.slice(0, MAX_PROMPT_CHARS) : undefined;
 }
 
-function sessionFromRow(row: SqlRow): SessionRow | undefined {
+function tableExists(db: SqlDatabase, table: string): boolean {
+  return db.prepare("select name from sqlite_master where type = 'table' and name = ?").all(table).length > 0;
+}
+
+function detectLayout(db: SqlDatabase): OpenCodeLayout {
+  return {
+    legacy: tableExists(db, 'session') && tableExists(db, 'message') && tableExists(db, 'part'),
+    v2: tableExists(db, 'session_v2') && tableExists(db, 'session_message'),
+  };
+}
+
+function sessionFromRow(row: SqlRow, storageVersion: 1 | 2): SessionRow | undefined {
   const id = stringField(row, 'id');
   if (!id) return undefined;
   return {
@@ -192,18 +219,52 @@ function sessionFromRow(row: SqlRow): SessionRow | undefined {
     directory: stringField(row, 'directory') ?? '',
     title: trimmed(stringField(row, 'title')),
     timeUpdated: numberField(row, 'time_updated') ?? 0,
+    storageVersion,
   };
 }
 
-function messageStats(db: SqlDatabase): Map<string, MessageStat> {
-  const stats = new Map<string, MessageStat>();
-  for (const row of db.prepare(MESSAGE_STATS_SQL).all()) {
+function sessions(db: SqlDatabase, layout: OpenCodeLayout): SessionRow[] {
+  const sessionsById = new Map<string, SessionRow>();
+  if (layout.legacy) {
+    for (const row of db.prepare(LEGACY_SESSIONS_SQL).all()) {
+      const session = sessionFromRow(row, 1);
+      if (session) sessionsById.set(session.id, session);
+    }
+  }
+  if (layout.v2) {
+    for (const row of db.prepare(V2_SESSIONS_SQL).all()) {
+      const session = sessionFromRow(row, 2);
+      if (session) sessionsById.set(session.id, session);
+    }
+  }
+  return [...sessionsById.values()];
+}
+
+function addMessageStats(target: Map<string, MessageStat>, rows: SqlRow[]): void {
+  for (const row of rows) {
     const id = stringField(row, 'session_id');
     if (!id) continue;
-    stats.set(id, {
-      messages: numberField(row, 'messages') ?? 0,
-      updated: numberField(row, 'updated') ?? 0,
+    const current = target.get(id);
+    target.set(id, {
+      messages: (current?.messages ?? 0) + (numberField(row, 'messages') ?? 0),
+      updated: Math.max(current?.updated ?? 0, numberField(row, 'updated') ?? 0),
     });
+  }
+}
+
+function messageStats(db: SqlDatabase, layout: OpenCodeLayout): Map<string, MessageStat> {
+  const stats = new Map<string, MessageStat>();
+  if (layout.legacy) {
+    addMessageStats(stats, db.prepare(LEGACY_MESSAGE_STATS_SQL).all());
+  }
+  if (layout.v2) {
+    const deduplicate = layout.legacy
+      ? 'where not exists (select 1 from message m where m.id = sm.id)'
+      : '';
+    addMessageStats(stats, db.prepare(`select session_id, count(*) as messages, max(time_updated) as updated
+      from session_message sm
+      ${deduplicate}
+      group by session_id`).all());
   }
   return stats;
 }
@@ -224,6 +285,11 @@ function addCostFields(entry: Entry, cost: number): void {
   entry.co = (cost * wOutput) / total;
   entry.cwc = (cost * wCacheWrite) / total;
   entry.crc = (cost * wCacheRead) / total;
+}
+
+function modelId(data: Record<string, unknown>): string | undefined {
+  const model = recordField(data, 'model');
+  return stringField(data, 'modelID') ?? (model ? stringField(model, 'id') : undefined);
 }
 
 function entryFromMessage(
@@ -253,7 +319,7 @@ function entryFromMessage(
     t,
     p: projectNameFromCwd(cwd),
     s: session.id,
-    m: stringField(data, 'modelID') ?? 'unknown',
+    m: modelId(data) ?? 'unknown',
     i: input,
     o: output,
     cc: cacheWrite,
@@ -269,23 +335,40 @@ function entryFromMessage(
 
 function parseSession(
   session: SessionRow,
-  rows: SqlRow[],
+  legacyRows: SqlRow[],
+  v2Rows: SqlRow[],
 ): { entries: Entry[]; agentRole?: string } {
   const entries: Entry[] = [];
   let agentRole: string | undefined;
-  for (const row of rows) {
+  for (const row of legacyRows) {
     const data = parseJson(stringField(row, 'data'));
     if (!data || stringField(data, 'role') !== 'assistant') continue;
     agentRole ??= stringField(data, 'agent');
     const entry = entryFromMessage(row, data, session);
     if (entry) entries.push(entry);
   }
+  for (const row of v2Rows) {
+    const data = parseJson(stringField(row, 'data'));
+    if (!data || stringField(row, 'type') !== 'assistant') continue;
+    agentRole ??= stringField(data, 'agent');
+    const entry = entryFromMessage(row, data, session);
+    if (entry) entries.push(entry);
+  }
+  entries.sort((a, b) => a.t - b.t);
   return { entries, agentRole };
 }
 
-function firstPrompt(statement: SqlStatement, sessionId: string): string | undefined {
-  const row = statement.all(sessionId)[0];
+function promptFromStatement(statement: SqlStatement | undefined, sessionId: string): string | undefined {
+  const row = statement?.all(sessionId)[0];
   return row ? trimmed(stringField(row, 'text')) : undefined;
+}
+
+function firstPrompt(
+  legacyStatement: SqlStatement | undefined,
+  v2Statement: SqlStatement | undefined,
+  sessionId: string,
+): string | undefined {
+  return promptFromStatement(v2Statement, sessionId) ?? promptFromStatement(legacyStatement, sessionId);
 }
 
 function addSessionMeta(
@@ -325,6 +408,12 @@ async function scanOpenCode(options: ProviderScanOptions = {}): Promise<Provider
     return emptyResult();
   }
 
+  const layout = detectLayout(db);
+  if (!layout.legacy && !layout.v2) {
+    db.close();
+    return emptyResult();
+  }
+
   const entries: Entry[] = [];
   const sessionMeta: Record<string, SessionMeta> = {};
   const files: Record<string, FileCacheRecord<OpenCodeExtra>> = {};
@@ -332,19 +421,33 @@ async function scanOpenCode(options: ProviderScanOptions = {}): Promise<Provider
   let parsedMessages = 0;
 
   try {
-    const stats = messageStats(db);
-    const messages = db.prepare(SESSION_MESSAGES_SQL);
-    const prompts = db.prepare(FIRST_PROMPT_SQL);
+    const stats = messageStats(db, layout);
+    const legacyMessages = layout.legacy ? db.prepare(LEGACY_SESSION_MESSAGES_SQL) : undefined;
+    const legacyPrompts = layout.legacy ? db.prepare(LEGACY_FIRST_PROMPT_SQL) : undefined;
+    const v2Deduplicate = layout.legacy
+      ? 'and not exists (select 1 from message m where m.id = sm.id)'
+      : '';
+    const v2Messages = layout.v2
+      ? db.prepare(`select id, type, time_created, data
+          from session_message sm
+          where session_id = ? ${v2Deduplicate}
+          order by seq`)
+      : undefined;
+    const v2Prompts = layout.v2 ? db.prepare(V2_FIRST_PROMPT_SQL) : undefined;
 
-    for (const row of db.prepare(SESSIONS_SQL).all()) {
-      const session = sessionFromRow(row);
-      if (!session) continue;
+    for (const session of sessions(db, layout)) {
       const stat = stats.get(session.id);
       const count = stat?.messages ?? 0;
       const updated = Math.max(session.timeUpdated, stat?.updated ?? 0);
 
       const cached = cache.files[session.id];
-      if (cached && cached.path === dbPath && cached.size === count && cached.mtimeMs === updated) {
+      if (
+        cached &&
+        cached.path === dbPath &&
+        cached.size === count &&
+        cached.mtimeMs === updated &&
+        cached.storageVersion === session.storageVersion
+      ) {
         files[session.id] = cached;
         cachedFiles++;
         for (const e of cached.entries) entries.push(e);
@@ -352,7 +455,11 @@ async function scanOpenCode(options: ProviderScanOptions = {}): Promise<Provider
         continue;
       }
 
-      const parsed = parseSession(session, messages.all(session.id));
+      const parsed = parseSession(
+        session,
+        legacyMessages?.all(session.id) ?? [],
+        v2Messages?.all(session.id) ?? [],
+      );
       parsedMessages += count;
       const record: FileCacheRecord<OpenCodeExtra> = {
         path: dbPath,
@@ -360,8 +467,9 @@ async function scanOpenCode(options: ProviderScanOptions = {}): Promise<Provider
         mtimeMs: updated,
         entries: parsed.entries,
         sessionId: session.id,
+        storageVersion: session.storageVersion,
         summary: session.title,
-        firstPrompt: firstPrompt(prompts, session.id),
+        firstPrompt: firstPrompt(legacyPrompts, v2Prompts, session.id),
         parentSessionId: session.parentId,
         agentRole: parsed.agentRole,
       };
@@ -413,11 +521,19 @@ function blocksFromPart(part: Record<string, unknown>): unknown[] {
   if (type === 'tool') {
     const state = recordField(part, 'state');
     const blocks: unknown[] = [
-      { type: 'tool_use', name: stringField(part, 'tool') ?? 'tool', input: state?.input },
+      {
+        type: 'tool_use',
+        name: stringField(part, 'tool') ?? stringField(part, 'name') ?? 'tool',
+        input: state?.input,
+      },
     ];
-    const output = state?.output ?? state?.error;
+    const output = state?.output ?? state?.content ?? state?.error;
     if (output !== undefined) {
-      blocks.push({ type: 'tool_result', tool_use_id: stringField(part, 'callID'), content: output });
+      blocks.push({
+        type: 'tool_result',
+        tool_use_id: stringField(part, 'callID') ?? stringField(part, 'id'),
+        content: output,
+      });
     }
     return blocks;
   }
@@ -455,11 +571,55 @@ function transcriptEntries(
     role,
     content: blocks,
     timestamp: parseTimestampMs(time?.created, row.time_created),
-    model: stringField(data, 'modelID'),
+    model: modelId(data),
     usageKey: role === 'assistant' ? usageKey(messageId) : undefined,
     isSidechain: false,
     isCompactSummary,
     tokens: role === 'assistant' ? openCodeTokens(data) : undefined,
+  });
+}
+
+function v2MessageContent(type: string | undefined, data: Record<string, unknown>): unknown {
+  if (type === 'assistant') {
+    const content = data.content;
+    if (!Array.isArray(content)) return content;
+    const blocks: unknown[] = [];
+    for (const block of content) {
+      if (isRecord(block)) blocks.push(...blocksFromPart(block));
+      else blocks.push(block);
+    }
+    return blocks;
+  }
+
+  if (type === 'compaction') return stringField(data, 'summary') ?? data;
+  const text = stringField(data, 'text');
+  const files = data.files;
+  if (text !== undefined && Array.isArray(files) && files.length > 0) {
+    return [{ type: 'text', text }, ...files];
+  }
+  return text ?? data.content ?? data;
+}
+
+function v2TranscriptEntries(
+  messageId: string,
+  row: SqlRow,
+  data: Record<string, unknown>,
+): TranscriptEntry[] {
+  const type = stringField(row, 'type');
+  const role = roleFromString(type);
+  const time = recordField(data, 'time');
+  const isAssistant = type === 'assistant';
+  return messageEntries({
+    idBase: messageId,
+    rawType: `message:${type ?? 'unknown'}`,
+    role,
+    content: v2MessageContent(type, data),
+    timestamp: parseTimestampMs(time?.created, row.time_created),
+    model: modelId(data),
+    usageKey: isAssistant ? usageKey(messageId) : undefined,
+    isSidechain: false,
+    isCompactSummary: type === 'compaction',
+    tokens: isAssistant ? openCodeTokens(data) : undefined,
   });
 }
 
@@ -482,23 +642,66 @@ async function readOpenCodeTranscript(
     return empty;
   }
 
+  const layout = detectLayout(db);
+  if (!layout.legacy && !layout.v2) {
+    db.close();
+    return empty;
+  }
+
   const entries: TranscriptEntry[] = [];
   try {
     const partsByMessage = new Map<string, Record<string, unknown>[]>();
-    for (const row of db.prepare(SESSION_PARTS_SQL).all(sessionId)) {
-      const messageId = stringField(row, 'message_id');
-      const data = parseJson(stringField(row, 'data'));
-      if (!messageId || !data) continue;
-      const bucket = partsByMessage.get(messageId);
-      if (bucket) bucket.push(data);
-      else partsByMessage.set(messageId, [data]);
+    if (layout.legacy) {
+      for (const row of db.prepare(LEGACY_SESSION_PARTS_SQL).all(sessionId)) {
+        const messageId = stringField(row, 'message_id');
+        const data = parseJson(stringField(row, 'data'));
+        if (!messageId || !data) continue;
+        const bucket = partsByMessage.get(messageId);
+        if (bucket) bucket.push(data);
+        else partsByMessage.set(messageId, [data]);
+      }
     }
 
-    for (const row of db.prepare(SESSION_MESSAGES_SQL).all(sessionId)) {
-      const messageId = stringField(row, 'id');
-      const data = parseJson(stringField(row, 'data'));
-      if (!messageId || !data) continue;
-      entries.push(...transcriptEntries(messageId, row, data, partsByMessage.get(messageId) ?? []));
+    const storedMessages: { row: SqlRow; data: Record<string, unknown>; storageVersion: 1 | 2 }[] = [];
+    if (layout.legacy) {
+      for (const row of db.prepare(LEGACY_SESSION_MESSAGES_SQL).all(sessionId)) {
+        const data = parseJson(stringField(row, 'data'));
+        if (data) storedMessages.push({ row, data, storageVersion: 1 });
+      }
+    }
+    if (layout.v2) {
+      const deduplicate = layout.legacy
+        ? 'and not exists (select 1 from message m where m.id = sm.id)'
+        : '';
+      const sql = `select id, type, time_created, data
+        from session_message sm
+        where session_id = ? ${deduplicate}
+        order by seq`;
+      for (const row of db.prepare(sql).all(sessionId)) {
+        const data = parseJson(stringField(row, 'data'));
+        if (data) storedMessages.push({ row, data, storageVersion: 2 });
+      }
+    }
+
+    storedMessages.sort((a, b) => {
+      const byTime = (numberField(a.row, 'time_created') ?? 0) - (numberField(b.row, 'time_created') ?? 0);
+      if (byTime !== 0) return byTime;
+      return (stringField(a.row, 'id') ?? '').localeCompare(stringField(b.row, 'id') ?? '');
+    });
+
+    for (const stored of storedMessages) {
+      const messageId = stringField(stored.row, 'id');
+      if (!messageId) continue;
+      if (stored.storageVersion === 1) {
+        entries.push(...transcriptEntries(
+          messageId,
+          stored.row,
+          stored.data,
+          partsByMessage.get(messageId) ?? [],
+        ));
+      } else {
+        entries.push(...v2TranscriptEntries(messageId, stored.row, stored.data));
+      }
     }
   } finally {
     db.close();

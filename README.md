@@ -1,8 +1,8 @@
 # tokens-gone
 
 Local web dashboard for AI coding agent token usage and cost. Reads Claude
-Code, Codex, OpenCode, Pi, and Oh My Pi session logs, aggregates tokens and
-cost, and lets you slice the data interactively.
+Code, Codex, OpenCode V1 and V2, Pi, and Oh My Pi session logs, aggregates
+tokens and cost, and lets you slice the data interactively.
 
 ## Run
 
@@ -54,8 +54,9 @@ LiteLLM pricing every run. tokens-gone is the same idea but:
 - `server/providers/*` walk provider-specific JSONL directories, parse logs
   streamingly, and cache parsed entries on disk keyed by `(path, size, mtime)`.
   Unchanged files are reused verbatim; appended files are tail-parsed. OpenCode
-  is the exception: it stores sessions in SQLite, so its provider reads the DB
-  read-only and caches per session instead of per file.
+  V1 and V2 are the exception: they store sessions in SQLite, so their shared
+  provider reads the DB read-only, deduplicates migrated messages, and caches
+  per session instead of per file.
 - `server/pricing.ts` resolves Anthropic Claude and OpenAI GPT pricing by model
   name, including provider-prefixed and date-suffixed model IDs. It accounts
   for provider-specific caching, tiered pricing, and fast-mode rates.
