@@ -3,6 +3,39 @@ import { costBreakdownForEntry, costForRequest, getPricing } from '../server/pri
 import { costBreakdown, costForEntry } from '../src/pricing';
 
 describe('pricing', () => {
+  it('prices Astra across the full-request context boundary on server and client', () => {
+    for (const model of ['gpt-6-astra', 'openai/gpt-6-astra']) {
+      for (const cached of [250_000, 250_001]) {
+        for (const fast of [false, true]) {
+          const entry: Parameters<typeof costBreakdownForEntry>[0] = {
+            m: model, i: 20_000, o: 10_000, cc: 2_000, cr: cached, f: fast ? 1 : 0,
+          };
+          const long = cached > 250_000;
+          const mult = fast ? 2 : 1;
+          const expected = {
+            input: (long ? 0.4 : 0.2) * mult,
+            output: (long ? 0.75 : 0.5) * mult,
+            cacheWrite: (long ? 0.05 : 0.025) * mult,
+            cacheRead: cached * (long ? 2 : 1) / 1_000_000 * mult,
+          };
+          const total = Object.values(expected).reduce((a, b) => a + b, 0);
+          const server = costBreakdownForEntry(entry);
+          const client = costBreakdown(entry);
+          expect(server.input).toBeCloseTo(expected.input, 10);
+          expect(server.output).toBeCloseTo(expected.output, 10);
+          expect(server.cacheWrite).toBeCloseTo(expected.cacheWrite, 10);
+          expect(server.cacheRead).toBeCloseTo(expected.cacheRead, 10);
+          expect(client.input).toBeCloseTo(expected.input, 10);
+          expect(client.output).toBeCloseTo(expected.output, 10);
+          expect(client.cwrite).toBeCloseTo(expected.cacheWrite, 10);
+          expect(client.cread).toBeCloseTo(expected.cacheRead, 10);
+          expect(costForEntry(entry)).toBeCloseTo(total, 10);
+          expect(costForRequest({ input: entry.i, output: entry.o, cacheWrite: entry.cc, cacheRead: entry.cr }, model, fast)).toBeCloseTo(total, 10);
+        }
+      }
+    }
+  });
+
   it('prices fable 5 / mythos 5 at $10/$50 per M with $1 cache reads', () => {
     for (const model of [
       'claude-fable-5',

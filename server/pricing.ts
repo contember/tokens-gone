@@ -37,6 +37,7 @@ export type ModelPricing = {
   };
   /** Multiplier applied to total cost when speed === "fast". */
   fastMultiplier?: number;
+  longContext?: { threshold: number; rates: ModelPricing };
 };
 
 const M = 1_000_000;
@@ -192,13 +193,27 @@ const GPT56_LUNA: ModelPricing = {
   cacheRead: 0.1 / M,
 };
 
-/**
- * Match an OpenAI GPT-5 family model name to its pricing.
- * Order matters: most specific substrings first so e.g. `gpt-5.5-pro`
- * doesn't fall through to `gpt-5.5`, and `gpt-5.1-codex` doesn't get
- * mistaken for `gpt-5-codex`.
- */
+// https://developers.openai.com/api/docs/models/gpt-6-astra
+const GPT6_ASTRA: ModelPricing = {
+  input: 10 / M,
+  output: 50 / M,
+  cacheWrite: 12.5 / M,
+  cacheRead: 1 / M,
+  fastMultiplier: 2,
+  longContext: {
+    threshold: 272_000,
+    rates: {
+      input: 20 / M,
+      output: 75 / M,
+      cacheWrite: 25 / M,
+      cacheRead: 2 / M,
+      fastMultiplier: 2,
+    },
+  },
+};
+
 function getOpenAIPricing(m: string): ModelPricing | null {
+  if (m.includes('gpt-6-astra')) return GPT6_ASTRA;
   if (m.includes('gpt-5.6-sol')) return GPT56_SOL;
   if (m.includes('gpt-5.6-terra')) return GPT56_TERRA;
   if (m.includes('gpt-5.6-luna')) return GPT56_LUNA;
@@ -266,12 +281,17 @@ export function getPricing(model: string): ModelPricing | null {
     return OPUS_LEGACY;
   }
 
-  if (m.includes('gpt-5')) return getOpenAIPricing(m);
+  if (m.includes('gpt-')) return getOpenAIPricing(m);
 
   return null;
 }
 
 const TIER_THRESHOLD = 200_000;
+
+function requestPricing(model: string, inputTokens: number): ModelPricing | null {
+  const p = getPricing(model);
+  return p?.longContext && inputTokens > p.longContext.threshold ? p.longContext.rates : p;
+}
 
 function tieredCost(
   tokens: number,
@@ -295,7 +315,7 @@ export function costForRequest(
   model: string,
   fast = false,
 ): number {
-  const p = getPricing(model);
+  const p = requestPricing(model, tokens.input + tokens.cacheWrite + tokens.cacheRead);
   if (!p) return 0;
   const cost =
     tieredCost(tokens.input, p.input, p.tiered?.input) +
@@ -338,7 +358,7 @@ export function costBreakdownForEntry(e: {
       cacheRead: e.crc ?? 0,
     };
   }
-  const p = getPricing(e.m);
+  const p = requestPricing(e.m, e.i + e.cc + e.cr);
   if (!p) return { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
   const mult = e.f && p.fastMultiplier ? p.fastMultiplier : 1;
   return {

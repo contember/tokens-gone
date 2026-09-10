@@ -24,6 +24,7 @@ type ModelPricing = {
     cacheRead: number;
   };
   fastMultiplier?: number;
+  longContext?: { threshold: number; rates: ModelPricing };
 };
 
 const FABLE_5: ModelPricing = {
@@ -157,7 +158,27 @@ const GPT56_LUNA: ModelPricing = {
   cacheRead: 0.1 / M,
 };
 
+// https://developers.openai.com/api/docs/models/gpt-6-astra
+const GPT6_ASTRA: ModelPricing = {
+  input: 10 / M,
+  output: 50 / M,
+  cacheWrite: 12.5 / M,
+  cacheRead: 1 / M,
+  fastMultiplier: 2,
+  longContext: {
+    threshold: 272_000,
+    rates: {
+      input: 20 / M,
+      output: 75 / M,
+      cacheWrite: 25 / M,
+      cacheRead: 2 / M,
+      fastMultiplier: 2,
+    },
+  },
+};
+
 function getOpenAIPricing(m: string): ModelPricing | null {
+  if (m.includes('gpt-6-astra')) return GPT6_ASTRA;
   if (m.includes('gpt-5.6-sol')) return GPT56_SOL;
   if (m.includes('gpt-5.6-terra')) return GPT56_TERRA;
   if (m.includes('gpt-5.6-luna')) return GPT56_LUNA;
@@ -213,7 +234,7 @@ export function getPricing(model: string): ModelPricing | null {
   } else if (m.includes('opus')) {
     const minor = minorVersion(m, RE_OPUS_4, RE_OPUS_MAJOR);
     result = minor !== null && minor >= 5 ? OPUS_NEW : OPUS_LEGACY;
-  } else if (m.includes('gpt-5')) {
+  } else if (m.includes('gpt-')) {
     result = getOpenAIPricing(m);
   } else {
     result = null;
@@ -223,6 +244,11 @@ export function getPricing(model: string): ModelPricing | null {
 }
 
 const TIER_THRESHOLD = 200_000;
+
+function requestPricing(model: string, inputTokens: number): ModelPricing | null {
+  const p = getPricing(model);
+  return p?.longContext && inputTokens > p.longContext.threshold ? p.longContext.rates : p;
+}
 
 function tieredCost(tokens: number, base: number, tiered: number | undefined): number {
   if (tokens <= 0) return 0;
@@ -253,7 +279,7 @@ export function costForEntry(e: {
 }): number {
   const explicit = explicitCost(e);
   if (explicit !== null) return explicit;
-  const p = getPricing(e.m);
+  const p = requestPricing(e.m, e.i + e.cc + e.cr);
   if (!p) return 0;
   const cost =
     tieredCost(e.i, p.input, p.tiered?.input) +
@@ -282,7 +308,7 @@ export function costBreakdown(e: {
 }): { input: number; output: number; cwrite: number; cread: number; total: number } {
   const explicit = explicitCostBreakdown(e);
   if (explicit) return explicit;
-  const p = getPricing(e.m);
+  const p = requestPricing(e.m, e.i + e.cc + e.cr);
   if (!p) return { input: 0, output: 0, cwrite: 0, cread: 0, total: 0 };
   const mult = e.f && p.fastMultiplier ? p.fastMultiplier : 1;
   const input = tieredCost(e.i, p.input, p.tiered?.input) * mult;
