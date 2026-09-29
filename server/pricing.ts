@@ -1,23 +1,26 @@
 /**
- * Hardcoded pricing for Anthropic Claude and OpenAI GPT-5 family
+ * Hardcoded pricing for Anthropic Claude and OpenAI GPT-5/GPT-6 families
  * (USD per million tokens).
  *
- * Sources cross-checked against Anthropic, OpenAI, and third-party pricing
- * pages on 2026-05-11. Fable 5.1 was updated from Anthropic on 2026-09-02;
- * GPT-5.6 was added from OpenAI's preview announcement on 2026-07-10.
+ * Checked against platform.claude.com/docs/en/about-claude/pricing and
+ * developers.openai.com/api/docs/pricing on 2026-09-29.
  *
  * Notable gotchas:
  *  - Fable 5 is 2x the price of Opus ($10/$50 per M). Fable 5.1 keeps
  *    those rates but cuts cache reads from $1 to $0.25 per M. Mythos uses
  *    the same versioned rates.
  *  - Opus 4.5+ is THREE TIMES CHEAPER than the original Opus 4/4.1.
+ *    Opus 5.5 is cheaper again ($4/$20) with cache reads at 0.05x input.
  *  - Sonnet 4.5 has 1M context with tiered pricing above 200k tokens;
- *    Sonnet 4.6 dropped that tier.
- *  - Opus 4.6+ has a "fast" service tier billed at 6× the standard rate;
- *    the JSONL records this as `usage.speed === "fast"`.
+ *    Sonnet 4.6 dropped that tier. Sonnet 5+ is $2/$10.
+ *  - Opus fast mode (`usage.speed === "fast"`) is 6x on Opus 4.6 and 2x on
+ *    Opus 4.8, 5 and 5.5.
  *  - OpenAI cached-input rate is consistently 10% of base input rate.
  *    GPT-5.6+ cache writes cost 1.25x the uncached input rate; older GPT
  *    models have cacheWrite set equal to cacheRead defensively.
+ *  - GPT-5.4+ requests above 272k input tokens are billed at the
+ *    long-context rate for the whole request.
+ *  - GPT-5.6 Sol is on promotional pricing through at least 2026-11-21.
  *  - GPT-5.1 and GPT-5.1-codex price the same as base GPT-5 ($1.25/$10).
  *
  * Cache-write cost (Claude side) is the 5-minute ephemeral cache rate.
@@ -56,13 +59,30 @@ const FABLE_51: ModelPricing = {
   cacheRead: 0.25 / M,
 };
 
-const OPUS_NEW: ModelPricing = {
-  // Opus 4.5, 4.6, 4.7 and presumably future Opus releases.
+const OPUS_45: ModelPricing = {
+  // Opus 4.5, 4.6, 4.7. Only 4.6 had fast mode.
   input: 5 / M,
   output: 25 / M,
   cacheWrite: 6.25 / M,
   cacheRead: 0.5 / M,
   fastMultiplier: 6,
+};
+
+const OPUS_48: ModelPricing = {
+  // Opus 4.8 and Opus 5.
+  input: 5 / M,
+  output: 25 / M,
+  cacheWrite: 6.25 / M,
+  cacheRead: 0.5 / M,
+  fastMultiplier: 2,
+};
+
+const OPUS_55: ModelPricing = {
+  input: 4 / M,
+  output: 20 / M,
+  cacheWrite: 5 / M,
+  cacheRead: 0.2 / M,
+  fastMultiplier: 2,
 };
 
 const OPUS_LEGACY: ModelPricing = {
@@ -88,11 +108,19 @@ const SONNET_TIERED: ModelPricing = {
 };
 
 const SONNET_FLAT: ModelPricing = {
-  // Sonnet 4.6+ — no tiered pricing.
+  // Sonnet 4.6 — no tiered pricing.
   input: 3 / M,
   output: 15 / M,
   cacheWrite: 3.75 / M,
   cacheRead: 0.3 / M,
+};
+
+const SONNET_5: ModelPricing = {
+  // Sonnet 5 and 5.5.
+  input: 2 / M,
+  output: 10 / M,
+  cacheWrite: 2.5 / M,
+  cacheRead: 0.2 / M,
 };
 
 const HAIKU: ModelPricing = {
@@ -129,8 +157,8 @@ const GPT5_NANO: ModelPricing = {
   cacheRead: 0.005 / M,
 };
 
+// gpt-5.2, gpt-5.2-codex and gpt-5.3-codex. Priced above base 5.x.
 const GPT52_CODEX: ModelPricing = {
-  // Dedicated codex agent variant. Priced above base 5.x.
   input: 1.75 / M,
   output: 14 / M,
   cacheWrite: 0.175 / M,
@@ -142,6 +170,15 @@ const GPT54: ModelPricing = {
   output: 15 / M,
   cacheWrite: 0.25 / M,
   cacheRead: 0.25 / M,
+  longContext: {
+    threshold: 272_000,
+    rates: {
+      input: 5 / M,
+      output: 22.5 / M,
+      cacheWrite: 0.5 / M,
+      cacheRead: 0.5 / M,
+    },
+  },
 };
 
 const GPT54_MINI: ModelPricing = {
@@ -158,11 +195,36 @@ const GPT54_NANO: ModelPricing = {
   cacheRead: 0.02 / M,
 };
 
+const GPT54_PRO: ModelPricing = {
+  input: 30 / M,
+  output: 180 / M,
+  cacheWrite: 3 / M,
+  cacheRead: 3 / M,
+  longContext: {
+    threshold: 272_000,
+    rates: {
+      input: 60 / M,
+      output: 270 / M,
+      cacheWrite: 6 / M,
+      cacheRead: 6 / M,
+    },
+  },
+};
+
 const GPT55: ModelPricing = {
   input: 5 / M,
   output: 30 / M,
   cacheWrite: 0.5 / M,
   cacheRead: 0.5 / M,
+  longContext: {
+    threshold: 272_000,
+    rates: {
+      input: 10 / M,
+      output: 45 / M,
+      cacheWrite: 1 / M,
+      cacheRead: 1 / M,
+    },
+  },
 };
 
 const GPT55_PRO: ModelPricing = {
@@ -170,27 +232,69 @@ const GPT55_PRO: ModelPricing = {
   output: 180 / M,
   cacheWrite: 3 / M,
   cacheRead: 3 / M,
+  longContext: {
+    threshold: 272_000,
+    rates: {
+      input: 60 / M,
+      output: 270 / M,
+      cacheWrite: 6 / M,
+      cacheRead: 6 / M,
+    },
+  },
 };
 
 const GPT56_SOL: ModelPricing = {
-  input: 5 / M,
-  output: 30 / M,
-  cacheWrite: 6.25 / M,
-  cacheRead: 0.5 / M,
+  input: 4 / M,
+  output: 20 / M,
+  cacheWrite: 5 / M,
+  cacheRead: 0.4 / M,
+  fastMultiplier: 2,
+  longContext: {
+    threshold: 272_000,
+    rates: {
+      input: 8 / M,
+      output: 30 / M,
+      cacheWrite: 10 / M,
+      cacheRead: 0.8 / M,
+      fastMultiplier: 2,
+    },
+  },
 };
 
 const GPT56_TERRA: ModelPricing = {
-  input: 2.5 / M,
-  output: 15 / M,
-  cacheWrite: 3.125 / M,
-  cacheRead: 0.25 / M,
+  input: 2 / M,
+  output: 12 / M,
+  cacheWrite: 2.5 / M,
+  cacheRead: 0.2 / M,
+  fastMultiplier: 2,
+  longContext: {
+    threshold: 272_000,
+    rates: {
+      input: 4 / M,
+      output: 18 / M,
+      cacheWrite: 5 / M,
+      cacheRead: 0.4 / M,
+      fastMultiplier: 2,
+    },
+  },
 };
 
 const GPT56_LUNA: ModelPricing = {
-  input: 1 / M,
-  output: 6 / M,
-  cacheWrite: 1.25 / M,
-  cacheRead: 0.1 / M,
+  input: 0.2 / M,
+  output: 1.2 / M,
+  cacheWrite: 0.25 / M,
+  cacheRead: 0.02 / M,
+  fastMultiplier: 2,
+  longContext: {
+    threshold: 272_000,
+    rates: {
+      input: 0.4 / M,
+      output: 1.8 / M,
+      cacheWrite: 0.5 / M,
+      cacheRead: 0.04 / M,
+      fastMultiplier: 2,
+    },
+  },
 };
 
 // https://developers.openai.com/api/docs/models/gpt-6-astra
@@ -212,23 +316,76 @@ const GPT6_ASTRA: ModelPricing = {
   },
 };
 
+const GPT6_SOL: ModelPricing = {
+  input: 2 / M,
+  output: 10 / M,
+  cacheWrite: 2.5 / M,
+  cacheRead: 0.2 / M,
+  fastMultiplier: 2,
+  longContext: {
+    threshold: 272_000,
+    rates: {
+      input: 4 / M,
+      output: 15 / M,
+      cacheWrite: 5 / M,
+      cacheRead: 0.4 / M,
+      fastMultiplier: 2,
+    },
+  },
+};
+
+const GPT6_LUNA: ModelPricing = {
+  input: 0.1 / M,
+  output: 0.5 / M,
+  cacheWrite: 0.125 / M,
+  cacheRead: 0.01 / M,
+  fastMultiplier: 2,
+  longContext: {
+    threshold: 272_000,
+    rates: {
+      input: 0.2 / M,
+      output: 0.75 / M,
+      cacheWrite: 0.25 / M,
+      cacheRead: 0.02 / M,
+      fastMultiplier: 2,
+    },
+  },
+};
+
 function getOpenAIPricing(m: string): ModelPricing | null {
   if (m.includes('gpt-6-astra')) return GPT6_ASTRA;
+  if (m.includes('gpt-6-sol')) return GPT6_SOL;
+  if (m.includes('gpt-6-luna')) return GPT6_LUNA;
   if (m.includes('gpt-5.6-sol')) return GPT56_SOL;
   if (m.includes('gpt-5.6-terra')) return GPT56_TERRA;
   if (m.includes('gpt-5.6-luna')) return GPT56_LUNA;
   if (m.includes('gpt-5.5-pro')) return GPT55_PRO;
   if (m.includes('gpt-5.5')) return GPT55;
+  if (m.includes('gpt-5.4-pro')) return GPT54_PRO;
   if (m.includes('gpt-5.4-mini')) return GPT54_MINI;
   if (m.includes('gpt-5.4-nano')) return GPT54_NANO;
   if (m.includes('gpt-5.4')) return GPT54;
   // 5.2 and 5.2-codex both at codex rate (no separate 5.2 base public yet).
-  if (m.includes('gpt-5.2')) return GPT52_CODEX;
+  if (m.includes('gpt-5.3') || m.includes('gpt-5.2')) return GPT52_CODEX;
   if (m.includes('gpt-5.1')) return GPT5_BASE; // 5.1 and 5.1-codex same as 5
   if (m.includes('gpt-5-mini')) return GPT5_MINI;
   if (m.includes('gpt-5-nano')) return GPT5_NANO;
   if (m.includes('gpt-5')) return GPT5_BASE; // gpt-5, gpt-5-codex, gpt-5.0…
   return null;
+}
+
+type ModelVersion = { major: number; minor: number };
+
+function modelVersion(model: string, family: string): ModelVersion | null {
+  // Matches "opus-4-7", "opus-4.7", "opus-4-7-20260416", "opus-5-5[1m]", "opus-5".
+  const match = model.match(new RegExp(`${family}-(\\d{1,2})(?:[-.](\\d{1,2}))?(?!\\d)`));
+  if (!match) return null;
+  return { major: parseInt(match[1]!, 10), minor: match[2] ? parseInt(match[2], 10) : 0 };
+}
+
+function isAtLeast(version: ModelVersion | null, major: number, minor: number): boolean {
+  if (version === null) return false;
+  return version.major > major || (version.major === major && version.minor >= minor);
 }
 
 /**
@@ -238,46 +395,32 @@ function getOpenAIPricing(m: string): ModelPricing | null {
  * `vertex_ai/claude-opus-4-7`, plus bare aliases like `opus`/`sonnet`.
  *
  * Date-suffixed names are tricky: `opus-4-20250514` is legacy Opus 4 with
- * a release date, NOT "Opus 4.20". The version-extraction regex caps the
- * minor at 2 digits and requires a dash/end after it, so 8-digit dates
- * are rejected by the version match and fall through to the legacy branch.
+ * a release date, NOT "Opus 4.20". Version parts are at most 2 digits and
+ * must not be followed by another digit, so 8-digit dates are rejected.
  */
-function minorVersion(model: string, family: string): number | null {
-  // Match e.g. "opus-4-7" or "opus-4-7-20260416" — minor is at most 2 digits
-  // and must be followed by `-` or end-of-string, ruling out date suffixes.
-  const m = model.match(new RegExp(`${family}-4-(\\d{1,2})(?:-|$)`));
-  if (m) return parseInt(m[1]!, 10);
-  // Match "opus-5" / "opus-10" — major-only, future generations.
-  const major = model.match(new RegExp(`${family}-(\\d{1,2})(?:-|$)`));
-  if (major) {
-    const v = parseInt(major[1]!, 10);
-    if (v >= 5) return 50; // synthetic minor; just signals "new"
-  }
-  return null;
-}
-
 export function getPricing(model: string): ModelPricing | null {
   const m = model.toLowerCase();
 
   if (m.includes('fable') || m.includes('mythos')) {
-    return /(?:fable|mythos)-5(?:\.|-)1(?:-|$)/.test(m) ? FABLE_51 : FABLE_5;
+    return isAtLeast(modelVersion(m, '(?:fable|mythos)'), 5, 1) ? FABLE_51 : FABLE_5;
   }
 
   if (m.includes('haiku')) return HAIKU;
 
   if (m.includes('sonnet')) {
-    const minor = minorVersion(m, 'sonnet');
-    // Sonnet 4.6+ dropped the 1M context tier. Sonnet 4.5 and earlier 4.x
-    // keep tiered pricing. Unknown bare "sonnet" → assume tiered (matches
-    // the most-recent generation that still has the tier).
-    if (minor !== null && minor >= 6) return SONNET_FLAT;
+    const version = modelVersion(m, 'sonnet');
+    if (isAtLeast(version, 5, 0)) return SONNET_5;
+    // Sonnet 4.6 dropped the 1M context tier. Unknown bare "sonnet" → assume
+    // tiered (matches the most-recent generation that still has the tier).
+    if (isAtLeast(version, 4, 6)) return SONNET_FLAT;
     return SONNET_TIERED;
   }
 
   if (m.includes('opus')) {
-    const minor = minorVersion(m, 'opus');
-    // Opus 4.5 and later are 3x cheaper than Opus 3/4/4.1.
-    if (minor !== null && minor >= 5) return OPUS_NEW;
+    const version = modelVersion(m, 'opus');
+    if (isAtLeast(version, 5, 5)) return OPUS_55;
+    if (isAtLeast(version, 4, 8)) return OPUS_48;
+    if (isAtLeast(version, 4, 5)) return OPUS_45;
     return OPUS_LEGACY;
   }
 

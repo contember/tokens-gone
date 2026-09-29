@@ -61,6 +61,7 @@ describe('pricing', () => {
       'anthropic/claude-fable-5.1',
       'claude-mythos-5.1',
       'claude-mythos-5-1',
+      'claude-fable-5-1[1m]',
     ]) {
       const p = getPricing(model);
       expect(p?.input).toBe(10 / 1_000_000);
@@ -86,6 +87,40 @@ describe('pricing', () => {
       expect(p?.output).toBe(25 / 1_000_000);
       expect(p?.cacheWrite).toBe(6.25 / 1_000_000);
       expect(p?.cacheRead).toBe(0.5 / 1_000_000);
+    }
+  });
+
+  it('opus 4.8 / 5 stay at $5/$25 per M', () => {
+    for (const model of ['claude-opus-4-8', 'claude-opus-5', 'anthropic/claude-opus-4.8']) {
+      const p = getPricing(model);
+      expect(p?.input).toBe(5 / 1_000_000);
+      expect(p?.output).toBe(25 / 1_000_000);
+      expect(p?.cacheRead).toBe(0.5 / 1_000_000);
+    }
+  });
+
+  it('prices opus 5.5 at $4/$20 per M with $0.20 cache reads', () => {
+    for (const model of [
+      'claude-opus-5-5',
+      'claude-opus-5-5[1m]',
+      'anthropic/claude-opus-5.5',
+    ]) {
+      const p = getPricing(model);
+      expect(p?.input).toBe(4 / 1_000_000);
+      expect(p?.output).toBe(20 / 1_000_000);
+      expect(p?.cacheWrite).toBe(5 / 1_000_000);
+      expect(p?.cacheRead).toBe(0.2 / 1_000_000);
+    }
+  });
+
+  it('prices sonnet 5 / 5.5 at $2/$10 per M', () => {
+    for (const model of ['claude-sonnet-5', 'claude-sonnet-5-5', 'anthropic/claude-sonnet-5.5']) {
+      const p = getPricing(model);
+      expect(p?.input).toBe(2 / 1_000_000);
+      expect(p?.output).toBe(10 / 1_000_000);
+      expect(p?.cacheWrite).toBe(2.5 / 1_000_000);
+      expect(p?.cacheRead).toBe(0.2 / 1_000_000);
+      expect(p?.tiered).toBeUndefined();
     }
   });
 
@@ -158,20 +193,45 @@ describe('pricing', () => {
     expect(getPricing('gpt-5.5-pro')?.output).toBe(180 / 1_000_000);
   });
 
-  it('prices the gpt-5.6 family including cache writes and reads', () => {
-    for (const [model, input, output] of [
-      ['gpt-5.6-sol', 5, 30],
-      ['gpt-5.6-terra', 2.5, 15],
-      ['gpt-5.6-luna', 1, 6],
+  it('prices the gpt-5.6 and gpt-6 families including cache writes and reads', () => {
+    for (const [model, input, output, cacheWrite, cacheRead] of [
+      ['gpt-5.6-sol', 4, 20, 5, 0.4],
+      ['gpt-5.6-terra', 2, 12, 2.5, 0.2],
+      ['gpt-5.6-luna', 0.2, 1.2, 0.25, 0.02],
+      ['gpt-6-sol', 2, 10, 2.5, 0.2],
+      ['gpt-6-luna', 0.1, 0.5, 0.125, 0.01],
     ] as const) {
       const p = getPricing(model);
       expect(p?.input).toBe(input / 1_000_000);
       expect(p?.output).toBe(output / 1_000_000);
-      expect(p?.cacheWrite).toBe((input * 1.25) / 1_000_000);
-      expect(p?.cacheRead).toBe((input * 0.1) / 1_000_000);
+      expect(p?.cacheWrite).toBe(cacheWrite / 1_000_000);
+      expect(p?.cacheRead).toBe(cacheRead / 1_000_000);
+      expect(p?.fastMultiplier).toBe(2);
     }
 
-    expect(getPricing('openai/gpt-5.6-sol-20260626')?.input).toBe(5 / 1_000_000);
+    expect(getPricing('openai/gpt-5.6-sol-20260626')?.input).toBe(4 / 1_000_000);
+    expect(getPricing('openai/gpt-6-sol-pro')?.input).toBe(2 / 1_000_000);
+  });
+
+  it('prices gpt-5.3-codex and gpt-5.4-pro on their own rates', () => {
+    expect(getPricing('gpt-5.3-codex')?.input).toBe(1.75 / 1_000_000);
+    expect(getPricing('gpt-5.3-codex')?.output).toBe(14 / 1_000_000);
+    expect(getPricing('gpt-5.4-pro')?.input).toBe(30 / 1_000_000);
+    expect(getPricing('gpt-5.4-pro')?.output).toBe(180 / 1_000_000);
+  });
+
+  it('bills gpt-5.4+ requests above 272k input tokens at the long-context rate', () => {
+    for (const [model, shortInput, longInput] of [
+      ['gpt-5.4', 2.5, 5],
+      ['gpt-5.5', 5, 10],
+      ['gpt-5.6-sol', 4, 8],
+      ['gpt-6-luna', 0.1, 0.2],
+    ] as const) {
+      const short = costForRequest({ input: 272_000, output: 0, cacheWrite: 0, cacheRead: 0 }, model);
+      const long = costForRequest({ input: 272_001, output: 0, cacheWrite: 0, cacheRead: 0 }, model);
+      expect(short).toBeCloseTo(272_000 * shortInput / 1_000_000, 10);
+      expect(long).toBeCloseTo(272_001 * longInput / 1_000_000, 10);
+    }
   });
 
   it('gpt-5 models have no fast multiplier or tiered pricing', () => {
@@ -215,18 +275,25 @@ describe('pricing', () => {
     expect(sonnet).toBeCloseTo(300_000 * (3 / 1_000_000), 10);
   });
 
-  it('applies 6x fast multiplier on opus 4.5+', () => {
-    const base = costForRequest(
-      { input: 1000, output: 0, cacheWrite: 0, cacheRead: 0 },
-      'claude-opus-4-7',
-      false,
-    );
-    const fast = costForRequest(
-      { input: 1000, output: 0, cacheWrite: 0, cacheRead: 0 },
-      'claude-opus-4-7',
-      true,
-    );
-    expect(fast).toBeCloseTo(base * 6, 10);
+  it('applies 6x fast multiplier on opus 4.6 and 2x on opus 4.8+', () => {
+    for (const [model, multiplier] of [
+      ['claude-opus-4-6', 6],
+      ['claude-opus-4-8', 2],
+      ['claude-opus-5', 2],
+      ['claude-opus-5-5', 2],
+    ] as const) {
+      const base = costForRequest(
+        { input: 1000, output: 0, cacheWrite: 0, cacheRead: 0 },
+        model,
+        false,
+      );
+      const fast = costForRequest(
+        { input: 1000, output: 0, cacheWrite: 0, cacheRead: 0 },
+        model,
+        true,
+      );
+      expect(fast).toBeCloseTo(base * multiplier, 10);
+    }
   });
 
   it('does not apply fast multiplier on sonnet or haiku', () => {
@@ -251,9 +318,15 @@ describe('pricing', () => {
       'claude-fable-5',
       'claude-fable-5.1',
       'claude-mythos-5',
+      'claude-opus-5-5',
+      'claude-opus-5-5[1m]',
+      'claude-opus-5',
+      'claude-opus-4-8',
       'claude-opus-4-7',
       'claude-opus-4-6',
       'claude-opus-4-1',
+      'claude-sonnet-5-5',
+      'claude-sonnet-5',
       'claude-sonnet-4-6',
       'claude-sonnet-4-5-20250929',
       'claude-haiku-4-5',
@@ -262,9 +335,13 @@ describe('pricing', () => {
       'gpt-5.2-codex',
       'gpt-5.5',
       'gpt-5.5-pro',
+      'gpt-5.3-codex',
+      'gpt-5.4-pro',
       'gpt-5.6-sol',
       'gpt-5.6-terra',
       'gpt-5.6-luna',
+      'gpt-6-sol',
+      'gpt-6-luna',
     ]) {
       const server = costForRequest(tokens, model, false);
       const client = costForEntry({
@@ -298,7 +375,7 @@ describe('pricing', () => {
   it('server and client agree on the per-type cost split', () => {
     // The server rolls up entries using its own breakdown; the client
     // reprices raw per-request entries with its copy. They must not drift.
-    for (const model of ['claude-fable-5', 'claude-fable-5.1', 'claude-opus-4-7', 'claude-sonnet-4-5', 'gpt-5.6-sol']) {
+    for (const model of ['claude-fable-5', 'claude-fable-5.1', 'claude-opus-4-7', 'claude-opus-5-5', 'claude-sonnet-4-5', 'gpt-5.6-sol', 'gpt-6-sol']) {
       for (const f of [0, 1] as const) {
         // Input above 200k exercises the tier on sonnet 4.5.
         const e = { m: model, i: 250_000, o: 3_000, cc: 40_000, cr: 900_000, f };
