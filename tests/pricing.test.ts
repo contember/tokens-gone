@@ -341,6 +341,7 @@ describe('pricing', () => {
       'gpt-5.6-terra',
       'gpt-5.6-luna',
       'gpt-6-sol',
+      'gpt-6.1-sol',
       'gpt-6-luna',
     ]) {
       const server = costForRequest(tokens, model, false);
@@ -353,6 +354,25 @@ describe('pricing', () => {
         f: 0,
       });
       expect(client).toBeCloseTo(server, 12);
+    }
+  });
+
+  it('prices GPT-6.1 Sol at standard, long-context and fast rates', () => {
+    for (const model of ['gpt-6.1-sol', 'openai/gpt-6.1-sol']) {
+      expect(getPricing(model)?.cacheRead).toBe(0.1 / 1_000_000);
+      const short = { input: 100_000, output: 10_000, cacheWrite: 20_000, cacheRead: 152_000 };
+      const long = { ...short, cacheRead: 152_001 };
+      expect(costForRequest(short, model)).toBeCloseTo(0.3652, 10);
+      expect(costForRequest(long, model)).toBeCloseTo(0.6804002, 10);
+      expect(costForRequest(long, model, true)).toBeCloseTo(1.3608004, 10);
+      expect(costForEntry({
+        m: model,
+        i: long.input,
+        o: long.output,
+        cc: long.cacheWrite,
+        cr: long.cacheRead,
+        f: 1,
+      })).toBeCloseTo(1.3608004, 10);
     }
   });
 

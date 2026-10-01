@@ -15,7 +15,7 @@
  *    Sonnet 4.6 dropped that tier. Sonnet 5+ is $2/$10.
  *  - Opus fast mode (`usage.speed === "fast"`) is 6x on Opus 4.6 and 2x on
  *    Opus 4.8, 5 and 5.5.
- *  - OpenAI cached-input rate is consistently 10% of base input rate.
+ *  - OpenAI cached-input rate is 10% of base input, except GPT-6.1 Sol (5%).
  *    GPT-5.6+ cache writes cost 1.25x the uncached input rate; older GPT
  *    models have cacheWrite set equal to cacheRead defensively.
  *  - GPT-5.4+ requests above 272k input tokens are billed at the
@@ -334,6 +334,24 @@ const GPT6_SOL: ModelPricing = {
   },
 };
 
+const GPT61_SOL: ModelPricing = {
+  input: 2 / M,
+  output: 10 / M,
+  cacheWrite: 2.5 / M,
+  cacheRead: 0.1 / M,
+  fastMultiplier: 2,
+  longContext: {
+    threshold: 272_000,
+    rates: {
+      input: 4 / M,
+      output: 15 / M,
+      cacheWrite: 5 / M,
+      cacheRead: 0.2 / M,
+      fastMultiplier: 2,
+    },
+  },
+};
+
 const GPT6_LUNA: ModelPricing = {
   input: 0.1 / M,
   output: 0.5 / M,
@@ -353,6 +371,7 @@ const GPT6_LUNA: ModelPricing = {
 };
 
 function getOpenAIPricing(m: string): ModelPricing | null {
+  if (m.includes('gpt-6.1-sol')) return GPT61_SOL;
   if (m.includes('gpt-6-astra')) return GPT6_ASTRA;
   if (m.includes('gpt-6-sol')) return GPT6_SOL;
   if (m.includes('gpt-6-luna')) return GPT6_LUNA;

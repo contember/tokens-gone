@@ -291,6 +291,23 @@ const GPT6_SOL: ModelPricing = {
     },
   },
 };
+const GPT61_SOL: ModelPricing = {
+  input: 2 / M,
+  output: 10 / M,
+  cacheWrite: 2.5 / M,
+  cacheRead: 0.1 / M,
+  fastMultiplier: 2,
+  longContext: {
+    threshold: 272_000,
+    rates: {
+      input: 4 / M,
+      output: 15 / M,
+      cacheWrite: 5 / M,
+      cacheRead: 0.2 / M,
+      fastMultiplier: 2,
+    },
+  },
+};
 const GPT6_LUNA: ModelPricing = {
   input: 0.1 / M,
   output: 0.5 / M,
@@ -310,6 +327,7 @@ const GPT6_LUNA: ModelPricing = {
 };
 
 function getOpenAIPricing(m: string): ModelPricing | null {
+  if (m.includes('gpt-6.1-sol')) return GPT61_SOL;
   if (m.includes('gpt-6-astra')) return GPT6_ASTRA;
   if (m.includes('gpt-6-sol')) return GPT6_SOL;
   if (m.includes('gpt-6-luna')) return GPT6_LUNA;
