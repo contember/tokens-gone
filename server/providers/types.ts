@@ -69,11 +69,18 @@ export type FileCacheRecord<TExtra = unknown> = {
   path: string;
   size: number;
   mtimeMs: number;
+  /**
+   * Byte offset just past the last complete line parsed; the next tail read
+   * starts here. Absent on records written before it existed (use `size`).
+   */
+  offset?: number;
   entries: Entry[];
 } & TExtra;
 
 export type CacheFile<TExtra = unknown> = {
   version: number;
+  /** Fingerprint of the source the cache was built from, when the provider tracks one. */
+  source?: string;
   files: Record<string, FileCacheRecord<TExtra>>;
 };
 
