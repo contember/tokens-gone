@@ -469,14 +469,28 @@ function mergeSorted(a: Entry[], b: Entry[]): Entry[] {
 /**
  * Stamp the resolved project name onto `entries[k]`. Entries already
  * returned from a scan must never change (the server diffs entry lists by
- * identity), so a different name means a copy in place of the original.
+ * identity), so those get a copy; entries parsed in this scan are written in place.
  */
-function stampProject(entries: Entry[], k: number, name: string): Entry {
+function stampProject(entries: Entry[], k: number, name: string, fresh: WeakSet<Entry>): Entry {
   const e = entries[k]!;
   if (e.p === name) return e;
+  if (fresh.has(e)) {
+    e.p = name;
+    return e;
+  }
   const stamped = { ...e, p: name };
   entries[k] = stamped;
   return stamped;
+}
+
+/** Entries parsed in this scan, i.e. not returned by any earlier one. */
+function freshEntries(changes: FileChange[]): WeakSet<Entry> {
+  const fresh = new WeakSet<Entry>();
+  for (const { previous, record } of changes) {
+    const known = previous ? new Set(previous.entries) : undefined;
+    for (const e of record.entries) if (!known?.has(e)) fresh.add(e);
+  }
+  return fresh;
 }
 
 /**
@@ -488,6 +502,7 @@ function buildMerge(
   records: Iterable<ClaudeRecord>,
   dirOf: (path: string) => string,
   dirNames: Map<string, string>,
+  fresh: WeakSet<Entry>,
 ): MergeState {
   const merge: MergeState = {
     byHash: new Map(),
@@ -501,7 +516,7 @@ function buildMerge(
     const projectName = dirNames.get(dirOf(record.path)) ?? '';
     const isBackground = record.sessionKind === 'bg';
     for (let k = 0; k < record.entries.length; k++) {
-      const e = stampProject(record.entries, k, projectName);
+      const e = stampProject(record.entries, k, projectName, fresh);
       if (isBackground) merge.background.add(e);
       if (e.h) {
         const current = merge.byHash.get(e.h);
@@ -533,17 +548,17 @@ function updateMerge(
   changes: FileChange[],
   dirOf: (path: string) => string,
   dirNames: Map<string, string>,
+  fresh: WeakSet<Entry>,
 ): void {
   merge.dirNames = new Map(dirNames);
   let added: Entry[] = [];
   const removed = new Set<Entry>();
-  for (const { previous, record } of changes) {
+  for (const { record } of changes) {
     const projectName = dirNames.get(dirOf(record.path)) ?? '';
     const isBackground = record.sessionKind === 'bg';
-    const known = previous ? new Set(previous.entries) : undefined;
     for (let k = 0; k < record.entries.length; k++) {
-      if (known?.has(record.entries[k]!)) continue;
-      const e = stampProject(record.entries, k, projectName);
+      if (!fresh.has(record.entries[k]!)) continue;
+      const e = stampProject(record.entries, k, projectName, fresh);
       if (isBackground) merge.background.add(e);
       if (e.h) {
         const current = merge.byHash.get(e.h);
@@ -723,10 +738,11 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
     dirNames.set(dir, cwd ? basename(cwd) : fallbackProjectName(dir));
   }
 
+  const fresh = freshEntries(changes);
   if (!state.merge || changes.some(needsRebuild) || dirRenamed(state.merge, dirNames)) {
-    state.merge = buildMerge(cache.records(), dirOf, dirNames);
+    state.merge = buildMerge(cache.records(), dirOf, dirNames, fresh);
   } else {
-    updateMerge(state.merge, changes, dirOf, dirNames);
+    updateMerge(state.merge, changes, dirOf, dirNames, fresh);
   }
 
   if (useCache && (cache.dirty.size > 0 || cache.legacyPath)) {

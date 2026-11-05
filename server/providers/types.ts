@@ -8,8 +8,8 @@
  *  - parsing its raw log/db format into the shared `Entry` shape
  *  - managing its own per-file disk cache so re-scans are incremental
  *
- * The server treats providers as opaque: it asks each one to scan,
- * concatenates the resulting entries, and re-sorts. No cross-provider
+ * The server treats providers as opaque: it asks each one to scan and
+ * feeds the entry lists to its per-session usage index. No cross-provider
  * dedup is needed because session ID spaces (UUIDs) don't collide.
  */
 
@@ -37,6 +37,11 @@ export type ProviderScanStats = {
 };
 
 export type ProviderScanResult = {
+  /**
+   * Sorted by time. Unchanged entries must be the same objects as in the
+   * previous scan, and a returned entry is never mutated afterwards: the
+   * server diffs consecutive lists by identity (see server/usageIndex.ts).
+   */
   entries: Entry[];
   sessionMeta: Record<string, SessionMeta>;
   stats: ProviderScanStats;
