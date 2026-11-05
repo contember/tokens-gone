@@ -5,13 +5,13 @@
  * /api/refresh re-runs the scan (incremental — usually <1s once the disk
  * cache is warm) and returns updated stats.
  *
- * Per-request entries stay server-side; `/api/data` ships them rolled up
- * (see ./rollup.ts) and `/api/session-entries` serves the raw ones for a
- * single session.
+ * Per-request entries stay server-side in a per-session index (see
+ * ./usageIndex.ts); `/api/data` ships them rolled up and
+ * `/api/session-entries` serves the raw ones for a single session.
  *
  * The server is provider-agnostic: it iterates `PROVIDERS`, asks each one
- * to scan, concatenates entries, and re-sorts. Adding a new harness only
- * touches `./providers/`.
+ * to scan, and feeds their entry lists to the index, which re-rolls only
+ * the sessions that changed. Adding a new harness only touches `./providers/`.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -31,10 +31,10 @@ import {
   printScanResult,
   startSpinner,
 } from './startupLog.ts';
-import { rollupEntries } from './rollup.ts';
 import { renderUsageSummary, summarizeUsage } from './summary.ts';
 import { rankRequests, type RequestHarness } from './requests.ts';
 import type { Entry, SessionMeta, UsageRow } from './types.ts';
+import { UsageIndex } from './usageIndex.ts';
 
 type ProviderInfo = {
   id: Provider['id'];
@@ -46,12 +46,10 @@ type ProviderInfo = {
 };
 
 type Cache = {
-  /** Per-request, kept server-side only — see `rollupEntries`. */
-  entries: Entry[];
+  /** Number of per-request entries in the index. */
+  requests: number;
   /** What `/api/data` ships. */
   rows: UsageRow[];
-  /** Per-request costs computed while building `rows`. */
-  requestCosts: Float64Array;
   sessionMeta: Record<string, SessionMeta>;
   stats: ProviderScanStats;
   providers: ProviderInfo[];
@@ -126,7 +124,16 @@ const EMPTY_STATS: ProviderScanStats = {
 // have headroom and the first run doesn't truncate just-recent activity.
 const PROMPT_HISTORY_WINDOW_DAYS = 400;
 
-async function runScan(): Promise<Omit<Cache, 'generatedAt' | 'rows' | 'requestCosts'>> {
+// The startup summary covers the last 30 calendar days; 31 days of entries
+// is a superset at any time of day and any DST shift.
+const SUMMARY_WINDOW_MS = 31 * 86400000;
+
+type ScanResult = Omit<Cache, 'generatedAt' | 'rows' | 'requests'> & {
+  /** Each provider's entries, sorted by time. */
+  lists: Map<Provider['id'], Entry[]>;
+};
+
+async function runScan(): Promise<ScanResult> {
   const promptFromMs = Date.now() - PROMPT_HISTORY_WINDOW_DAYS * 86400000;
   const [providerResults, promptActivity] = await Promise.all([
     scanProviders(),
@@ -140,9 +147,7 @@ async function runScan(): Promise<Omit<Cache, 'generatedAt' | 'rows' | 'requestC
  * still appear in the result with empty stats so the UI can show "Codex:
  * not detected" without special-casing.
  */
-async function scanProviders(): Promise<
-  Omit<Cache, 'generatedAt' | 'promptActivity' | 'rows' | 'requestCosts'>
-> {
+async function scanProviders(): Promise<Omit<ScanResult, 'promptActivity'>> {
   const results = await Promise.all(
     PROVIDERS.map(async (p) => {
       const dataDir = p.defaultDataDir();
@@ -164,19 +169,18 @@ async function scanProviders(): Promise<
     }),
   );
 
-  const entries: Entry[] = [];
+  const lists = new Map<Provider['id'], Entry[]>();
   let sessionMeta: Record<string, SessionMeta> = {};
   const providers: ProviderInfo[] = [];
   for (const r of results) {
     providers.push(r.info);
-    for (const e of r.entries) entries.push(e);
+    lists.set(r.info.id, r.entries);
     // Session ID spaces don't collide in practice (all UUIDs), so a simple
     // spread merge is fine. Later providers win on collision, which is
     // intentional: it's how we'd preserve a provider's own labels over a
     // stale Claude-side entry if we ever shared IDs.
     sessionMeta = { ...sessionMeta, ...r.sessionMeta };
   }
-  entries.sort((a, b) => a.t - b.t);
 
   const stats = providers.reduce<ProviderScanStats>(
     (acc, p) => ({
@@ -188,7 +192,7 @@ async function scanProviders(): Promise<
     { ...EMPTY_STATS },
   );
 
-  return { entries, sessionMeta, stats, providers };
+  return { lists, sessionMeta, stats, providers };
 }
 
 export type StartOptions = {
@@ -207,18 +211,19 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const host = opts.host ?? '127.0.0.1';
   const dist = resolveDistDir();
 
+  const index = new UsageIndex();
   let cached: Cache | null = null;
   let inFlight: Promise<void> | null = null;
 
   async function refresh(): Promise<void> {
     if (inFlight) return inFlight;
     inFlight = (async () => {
-      const result = await runScan();
-      const requestCosts = new Float64Array(result.entries.length);
+      const { lists, ...result } = await runScan();
+      index.update(lists);
       cached = {
         ...result,
-        rows: rollupEntries(result.entries, requestCosts),
-        requestCosts,
+        requests: index.size,
+        rows: index.rows,
         generatedAt: Date.now(),
       };
       inFlight = null;
@@ -227,13 +232,10 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   }
 
   function providerForSession(sessionId: string): Provider | undefined {
-    if (!cached) return undefined;
-    for (const e of cached.entries) {
-      if (e.s !== sessionId) continue;
-      const providerId = e.src ?? 'cc';
-      return PROVIDERS.find((p) => p.id === providerId);
-    }
-    return undefined;
+    const first = index.session(sessionId)?.entries[0];
+    if (!first) return undefined;
+    const providerId = first.src ?? 'cc';
+    return PROVIDERS.find((p) => p.id === providerId);
   }
 
   async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -247,7 +249,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       await refresh();
       sendJson(req, res, {
         ok: true,
-        entries: cached!.entries.length,
+        entries: cached!.requests,
         stats: cached!.stats,
         providers: cached!.providers,
         generatedAt: cached!.generatedAt,
@@ -269,12 +271,10 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       }
       if (!cached) await refresh();
       const out: Omit<Entry, 'h'>[] = [];
-      for (const e of cached!.entries) {
-        if (e.s !== sessionId) continue;
+      for (const e of index.session(sessionId)?.entries ?? []) {
         const { h: _h, ...rest } = e;
         out.push(rest);
       }
-      out.sort((a, b) => a.t - b.t);
       sendJson(req, res, { entries: out });
       return;
     }
@@ -303,13 +303,13 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       }
 
       const limit = Math.min(200, Math.max(1, Math.floor(requestedLimit)));
-      const result = rankRequests(cached!.entries, {
+      const result = rankRequests(index.sessions(), {
         from,
         to,
         projects: new Set(url.searchParams.getAll('project')),
         models: new Set(url.searchParams.getAll('model')),
         harnesses,
-      }, limit, cached!.requestCosts);
+      }, limit);
       sendJson(req, res, result);
       return;
     }
@@ -331,7 +331,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         return;
       }
       const transcript = await provider.readTranscript(sessionId);
-      markTranscriptUsageOwnership(transcript, cached!.entries);
+      markTranscriptUsageOwnership(transcript, index.session(sessionId)?.entries ?? []);
       sendJson(req, res, transcript);
       return;
     }
@@ -340,7 +340,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       if (!cached) await refresh();
       sendJson(req, res, {
         entries: cached!.rows,
-        requests: cached!.entries.length,
+        requests: cached!.requests,
         sessionMeta: cached!.sessionMeta,
         stats: cached!.stats,
         providers: cached!.providers,
@@ -428,11 +428,15 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       stopSpinner();
       if (!cached) return;
       printScanResult(style, {
-        entries: cached.entries.length,
+        entries: cached.requests,
         stats: cached.stats,
         providers: cached.providers,
       });
-      const summary = renderUsageSummary(summarizeUsage(cached.entries, Date.now()), style);
+      const now = Date.now();
+      const summary = renderUsageSummary(
+        summarizeUsage(index.entriesSince(now - SUMMARY_WINDOW_MS), now),
+        style,
+      );
       if (summary.length > 0) {
         console.log('');
         for (const line of summary) console.log(line ? `  ${line}` : '');

@@ -558,4 +558,36 @@ describe('claude cache', () => {
     expect(transcript.missingRaw).toBe(false);
     expect(transcript.streams.map((stream) => stream.path)).toEqual([join('-p-alpha', 't.jsonl')]);
   });
+
+  it('never mutates entries it already returned when a project is renamed', async () => {
+    // No cwd yet: the dir name falls back to its last segment.
+    await writeFile(join(dataDir, '-p-alpha', 'a.jsonl'), `${usageLine('n-1', 1, { cwd: undefined })}\n`);
+    const first = await scan({ dataDir, cachePath: cacheDir });
+    const returned = first.entries.find((e) => e.h === 'n-1:req-n-1')!;
+    expect(returned.p).toBe('alpha');
+
+    await writeFile(join(dataDir, '-p-alpha', 'b.jsonl'), `${usageLine('n-2', 1, { cwd: '/home/user/real-name' })}\n`);
+    const second = await scan({ dataDir, cachePath: cacheDir });
+    expect(returned.p).toBe('alpha');
+    expect(new Set(second.entries.map((e) => e.p))).toEqual(new Set(['real-name']));
+    expect(second.entries).not.toContain(returned);
+  });
+
+  it('returns unchanged entries as the same objects and never mutates them', async () => {
+    const path = join(dataDir, '-p-alpha', 'live.jsonl');
+    await writeFile(path, `${usageLine('i-1', 5)}\n`);
+    await writeFile(join(dataDir, '-p-beta', 'other.jsonl'), `${usageLine('i-2', 3)}\n`);
+    const first = await scan({ dataDir, cachePath: cacheDir });
+    const chunk = first.entries.find((e) => e.h === 'i-1:req-i-1')!;
+    const other = first.entries.find((e) => e.h === 'i-2:req-i-2')!;
+
+    // The final chunk of the same request replaces the earlier one.
+    await appendFile(path, `${usageLine('i-1', 40)}\n`);
+    await writeFile(join(dataDir, '-p-alpha', 'new.jsonl'), `${usageLine('i-3', 1)}\n`);
+    const second = await scan({ dataDir, cachePath: cacheDir });
+    expect(second.entries.find((e) => e.h === 'i-2:req-i-2')).toBe(other);
+    expect(second.entries.find((e) => e.h === 'i-1:req-i-1')?.o).toBe(40);
+    expect(chunk.o).toBe(5);
+    expect(chunk.p).toBe('foo');
+  });
 });
