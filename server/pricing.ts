@@ -417,7 +417,19 @@ function isAtLeast(version: ModelVersion | null, major: number, minor: number): 
  * a release date, NOT "Opus 4.20". Version parts are at most 2 digits and
  * must not be followed by another digit, so 8-digit dates are rejected.
  */
+const pricingByModel = new Map<string, ModelPricing | null>();
+
+/** Memoized: rollups price every request, but only a handful of model ids exist. */
 export function getPricing(model: string): ModelPricing | null {
+  let pricing = pricingByModel.get(model);
+  if (pricing === undefined) {
+    pricing = resolvePricing(model);
+    pricingByModel.set(model, pricing);
+  }
+  return pricing;
+}
+
+function resolvePricing(model: string): ModelPricing | null {
   const m = model.toLowerCase();
 
   if (m.includes('fable') || m.includes('mythos')) {
