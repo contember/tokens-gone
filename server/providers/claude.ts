@@ -467,6 +467,19 @@ function mergeSorted(a: Entry[], b: Entry[]): Entry[] {
 }
 
 /**
+ * Stamp the resolved project name onto `entries[k]`. Entries already
+ * returned from a scan must never change (the server diffs entry lists by
+ * identity), so a different name means a copy in place of the original.
+ */
+function stampProject(entries: Entry[], k: number, name: string): Entry {
+  const e = entries[k]!;
+  if (e.p === name) return e;
+  const stamped = { ...e, p: name };
+  entries[k] = stamped;
+  return stamped;
+}
+
+/**
  * Full cross-file dedup over every cached record. Subagent JSONLs replicate
  * their parent session's API calls, so the same msgId:reqId shows up in
  * several files; hashless entries fall back to structural dedup.
@@ -487,8 +500,8 @@ function buildMerge(
   for (const record of records) {
     const projectName = dirNames.get(dirOf(record.path)) ?? '';
     const isBackground = record.sessionKind === 'bg';
-    for (const e of record.entries) {
-      e.p = projectName;
+    for (let k = 0; k < record.entries.length; k++) {
+      const e = stampProject(record.entries, k, projectName);
       if (isBackground) merge.background.add(e);
       if (e.h) {
         const current = merge.byHash.get(e.h);
@@ -511,33 +524,26 @@ function buildMerge(
 
 /**
  * Fold the changed files into an existing merge. Only valid when every
- * change is monotonic: new files, or appended files whose records keep the
- * old entries apart from ones superseded by a larger streaming chunk.
+ * change is monotonic (new files, or appended files whose records keep the
+ * old entries apart from ones superseded by a larger streaming chunk) and
+ * no known dir changed its name.
  */
 function updateMerge(
   merge: MergeState,
   changes: FileChange[],
   dirOf: (path: string) => string,
   dirNames: Map<string, string>,
-  recordsByDir: Map<string, ClaudeRecord[]>,
 ): void {
-  for (const [dir, name] of dirNames) {
-    if (merge.dirNames.get(dir) === name) continue;
-    for (const record of recordsByDir.get(dir) ?? []) {
-      for (const e of record.entries) e.p = name;
-    }
-    merge.dirNames.set(dir, name);
-  }
-
+  merge.dirNames = new Map(dirNames);
   let added: Entry[] = [];
   const removed = new Set<Entry>();
   for (const { previous, record } of changes) {
     const projectName = dirNames.get(dirOf(record.path)) ?? '';
     const isBackground = record.sessionKind === 'bg';
     const known = previous ? new Set(previous.entries) : undefined;
-    for (const e of record.entries) {
-      if (known?.has(e)) continue;
-      e.p = projectName;
+    for (let k = 0; k < record.entries.length; k++) {
+      if (known?.has(record.entries[k]!)) continue;
+      const e = stampProject(record.entries, k, projectName);
       if (isBackground) merge.background.add(e);
       if (e.h) {
         const current = merge.byHash.get(e.h);
@@ -568,6 +574,15 @@ function updateMerge(
 function needsRebuild(change: FileChange): boolean {
   if (!change.previous) return false;
   return change.kind === 'cold' || change.previous.sessionKind !== change.record.sessionKind;
+}
+
+/** A known dir resolved to another project name, so its stamped entries must be replaced. */
+function dirRenamed(merge: MergeState, dirNames: Map<string, string>): boolean {
+  for (const [dir, name] of merge.dirNames) {
+    const next = dirNames.get(dir);
+    if (next !== undefined && next !== name) return true;
+  }
+  return false;
 }
 
 async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderScanResult> {
@@ -708,10 +723,10 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
     dirNames.set(dir, cwd ? basename(cwd) : fallbackProjectName(dir));
   }
 
-  if (!state.merge || changes.some(needsRebuild)) {
+  if (!state.merge || changes.some(needsRebuild) || dirRenamed(state.merge, dirNames)) {
     state.merge = buildMerge(cache.records(), dirOf, dirNames);
   } else {
-    updateMerge(state.merge, changes, dirOf, dirNames, recordsByDir);
+    updateMerge(state.merge, changes, dirOf, dirNames);
   }
 
   if (useCache && (cache.dirty.size > 0 || cache.legacyPath)) {
