@@ -3,6 +3,8 @@
  *   - `pMap`   — bounded-concurrency map (ulimit safety on macOS)
  *   - `listJsonlFiles` — recursive walker that yields *.jsonl paths
  *   - `loadCache` / `saveCache` — disk-cache I/O with versioned envelope
+ *   - `loadShardedCache` / `saveShardedCache` — the same, split into shard files
+ *   - `JsonlLines` — line reader that tracks where a tail read resumes
  *
  * Providers also share an "incremental scan" workflow: for each file,
  * decide whether it's unchanged (reuse), appended (parse tail), or
@@ -10,9 +12,9 @@
  * providers and is captured in `decideFileState`.
  */
 
-import { readdir, readFile, writeFile, mkdir } from 'node:fs/promises';
-import { dirname } from 'node:path';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { readdir, readFile, mkdir, open, rename, unlink, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import type { CacheFile, FileCacheRecord } from './types.ts';
 
 /**
@@ -174,7 +176,8 @@ export type FileState<T> =
  *
  * "Appended" requires the file to have grown AND mtime to not have moved
  * backwards — a backwards mtime usually means the file was rewritten and
- * we should re-parse from scratch to be safe.
+ * we should re-parse from scratch to be safe. The tail starts at the
+ * record's `offset` (end of the last complete line), not at its size.
  */
 export function decideFileState<T>(
   info: FileInfo,
@@ -184,8 +187,296 @@ export function decideFileState<T>(
   if (cached.size === info.size && cached.mtimeMs === info.mtimeMs) {
     return { kind: 'unchanged', cached };
   }
-  if (info.size > cached.size && cached.mtimeMs <= info.mtimeMs) {
-    return { kind: 'appended', cached, fromOffset: cached.size };
+  const fromOffset = cached.offset ?? cached.size;
+  if (info.size > cached.size && info.size >= fromOffset && cached.mtimeMs <= info.mtimeMs) {
+    return { kind: 'appended', cached, fromOffset };
   }
   return { kind: 'cold' };
+}
+
+const READ_CHUNK_BYTES = 1024 * 1024;
+
+function isJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Line reader for append-only JSONL logs that tracks where to resume.
+ *
+ * `endOffset` is the byte offset just past the last complete line yielded.
+ * A final line without a trailing newline is yielded only when it is valid
+ * JSON; otherwise it is a write in progress, so it is not yielded and
+ * `endOffset` stays at its start, letting the next tail read pick it up whole.
+ */
+export class JsonlLines implements AsyncIterable<string> {
+  endOffset: number;
+
+  constructor(
+    private readonly path: string,
+    private readonly start: number,
+  ) {
+    this.endOffset = start;
+  }
+
+  async *[Symbol.asyncIterator](): AsyncGenerator<string> {
+    const fh = await open(this.path, 'r');
+    try {
+      const buf = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+      // Bytes of the current line that started in an earlier chunk.
+      let carry: Buffer[] = [];
+      let pos = this.start;
+      while (true) {
+        const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
+        if (bytesRead === 0) break;
+        const chunkStart = pos;
+        pos += bytesRead;
+        const chunk = buf.subarray(0, bytesRead);
+        let lineStart = 0;
+        let nl: number;
+        while ((nl = chunk.indexOf(0x0a, lineStart)) !== -1) {
+          let line: Buffer = chunk.subarray(lineStart, nl);
+          if (carry.length > 0) {
+            carry.push(line);
+            line = Buffer.concat(carry);
+            carry = [];
+          }
+          lineStart = nl + 1;
+          this.endOffset = chunkStart + lineStart;
+          const end = line.length > 0 && line[line.length - 1] === 0x0d ? line.length - 1 : line.length;
+          yield line.toString('utf-8', 0, end);
+        }
+        // `buf` is reused by the next read, so the partial tail must be copied.
+        if (lineStart < bytesRead) carry.push(Buffer.from(chunk.subarray(lineStart)));
+      }
+      if (carry.length > 0) {
+        const last = Buffer.concat(carry).toString('utf-8');
+        if (isJson(last)) {
+          this.endOffset = pos;
+          yield last;
+        }
+      }
+    } finally {
+      await fh.close();
+    }
+  }
+}
+
+/** Best effort: some platforms (Windows) can't open a directory for syncing. */
+async function syncDir(dir: string): Promise<void> {
+  const fh = await open(dir, 'r').catch(() => undefined);
+  if (!fh) return;
+  try {
+    await fh.sync();
+  } catch {
+    // Not supported here; the renames are as durable as the platform allows.
+  } finally {
+    await fh.close();
+  }
+}
+
+function shardFileName(key: string): string {
+  return `${createHash('sha1').update(key).digest('hex')}.json`;
+}
+
+type ShardFile<T> = {
+  version: number;
+  key: string;
+  files: Record<string, FileCacheRecord<T>>;
+};
+
+/**
+ * Cache split into shards, one JSON file per shard key, so a scan rewrites
+ * only the shards whose records changed. Records are looked up by path; the
+ * caller decides which shard a record belongs to.
+ */
+export class ShardedCache<T> {
+  private readonly shards = new Map<string, Map<string, FileCacheRecord<T>>>();
+  private readonly shardOfPath = new Map<string, string>();
+  /** Shard keys with changes not yet written. */
+  readonly dirty = new Set<string>();
+  /** Single-file cache this one was migrated from; removed after the first full save. */
+  legacyPath: string | undefined;
+
+  get(path: string): FileCacheRecord<T> | undefined {
+    const key = this.shardOfPath.get(path);
+    return key === undefined ? undefined : this.shards.get(key)?.get(path);
+  }
+
+  set(key: string, record: FileCacheRecord<T>): void {
+    const previousKey = this.shardOfPath.get(record.path);
+    if (previousKey !== undefined && previousKey !== key) {
+      this.shards.get(previousKey)?.delete(record.path);
+      this.dirty.add(previousKey);
+    }
+    let shard = this.shards.get(key);
+    if (!shard) {
+      shard = new Map();
+      this.shards.set(key, shard);
+    }
+    shard.set(record.path, record);
+    this.shardOfPath.set(record.path, key);
+    this.dirty.add(key);
+  }
+
+  *records(): IterableIterator<FileCacheRecord<T>> {
+    for (const shard of this.shards.values()) yield* shard.values();
+  }
+
+  /** Serialized shard, or undefined when nothing is left in it. */
+  serialize(key: string, version: number): string | undefined {
+    const shard = this.shards.get(key);
+    if (!shard || shard.size === 0) return undefined;
+    const file: ShardFile<T> = { version, key, files: Object.fromEntries(shard) };
+    return JSON.stringify(file);
+  }
+}
+
+const shardedCaches = new Map<string, Promise<ShardedCache<unknown>>>();
+
+const TMP_SUFFIX = '.tmp';
+
+/**
+ * Load every shard under `dir`, memoized per process like `loadCache`.
+ * Shards of another version are skipped and an unparsable shard is renamed
+ * to `*.corrupt`, so their files get re-parsed without overwriting what was
+ * there. When `legacyPath` (the old single-file cache) still exists, its
+ * records are migrated first and shards override them: the legacy file is
+ * only deleted once every shard has been written.
+ */
+export function loadShardedCache<T>(
+  dir: string,
+  version: number,
+  legacyPath: string,
+  keyOf: (path: string) => string,
+): Promise<ShardedCache<T>> {
+  let memo = shardedCaches.get(dir);
+  if (!memo) {
+    memo = readShardedCache<T>(dir, version, legacyPath, keyOf);
+    shardedCaches.set(dir, memo);
+  }
+  return memo as Promise<ShardedCache<T>>;
+}
+
+async function readShardedCache<T>(
+  dir: string,
+  version: number,
+  legacyPath: string,
+  keyOf: (path: string) => string,
+): Promise<ShardedCache<T>> {
+  const cache = new ShardedCache<T>();
+  const legacy = await readLegacyCache<T>(legacyPath, version);
+  if (legacy) {
+    for (const record of Object.values(legacy.files)) cache.set(keyOf(record.path), record);
+    cache.legacyPath = legacyPath;
+  }
+
+  const names = await readdir(dir).catch(() => [] as string[]);
+  // Left behind by a process that died mid-write.
+  await Promise.all(
+    names.filter((name) => name.endsWith(TMP_SUFFIX)).map((name) => unlink(join(dir, name)).catch(() => undefined)),
+  );
+  const shards = await pMap(
+    names.filter((name) => name.endsWith('.json')),
+    16,
+    async (name) => readShard<T>(join(dir, name), version),
+  );
+  for (const shard of shards) {
+    if (!shard) continue;
+    for (const record of Object.values(shard.files)) cache.set(shard.key, record);
+  }
+  // Shards just read match the disk; only a migration leaves work to write.
+  if (!legacy) cache.dirty.clear();
+  return cache;
+}
+
+async function readLegacyCache<T>(path: string, version: number): Promise<CacheFile<T> | undefined> {
+  const raw = await readFile(path, 'utf-8').catch(() => null);
+  if (raw == null) return undefined;
+  try {
+    const data = JSON.parse(raw) as CacheFile<T>;
+    return data?.version === version && data.files ? data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function readShard<T>(path: string, version: number): Promise<ShardFile<T> | undefined> {
+  const raw = await readFile(path, 'utf-8').catch(() => null);
+  if (raw == null) return undefined;
+  let data: ShardFile<T>;
+  try {
+    data = JSON.parse(raw) as ShardFile<T>;
+  } catch {
+    await rename(path, `${path}.corrupt`).catch(() => undefined);
+    return undefined;
+  }
+  return data?.version === version && typeof data.key === 'string' && data.files ? data : undefined;
+}
+
+/** Write via a synced temp file and rename, so a crash leaves the old or the new content. */
+async function writeFileAtomic(path: string, body: string): Promise<void> {
+  const tmp = `${path}.${process.pid}${TMP_SUFFIX}`;
+  const fh = await open(tmp, 'w');
+  try {
+    await fh.writeFile(body);
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+  await rename(tmp, path);
+}
+
+/**
+ * Write the dirty shards of `cache` in the background, serialized per `dir`
+ * like `saveCache`. Each shard is written to a temp file and renamed so a
+ * crash never leaves a truncated shard. Shards that fail stay dirty.
+ */
+export function saveShardedCache<T>(dir: string, version: number, cache: ShardedCache<T>): Promise<void> {
+  const prev = pendingWrites.get(dir) ?? Promise.resolve();
+  const next = prev
+    .catch(() => undefined)
+    // Let the scan's caller respond before serializing blocks the event loop.
+    .then(() => new Promise<void>((resolve) => setImmediate(resolve)))
+    .then(async () => {
+      const keys = [...cache.dirty];
+      if (keys.length === 0) return;
+      cache.dirty.clear();
+      let failed = false;
+      try {
+        await mkdir(dir, { recursive: true });
+      } catch {
+        for (const key of keys) cache.dirty.add(key);
+        return;
+      }
+      for (const key of keys) {
+        const path = join(dir, shardFileName(key));
+        try {
+          const body = cache.serialize(key, version);
+          if (body === undefined) {
+            await unlink(path).catch(() => undefined);
+            continue;
+          }
+          await writeFileAtomic(path, body);
+        } catch {
+          cache.dirty.add(key);
+          failed = true;
+        }
+      }
+      if (!failed && cache.legacyPath) {
+        // The renames must be durable before the only other copy goes away.
+        await syncDir(dir);
+        await unlink(cache.legacyPath).catch(() => undefined);
+        cache.legacyPath = undefined;
+      }
+    });
+  pendingWrites.set(dir, next);
+  next.finally(() => {
+    if (pendingWrites.get(dir) === next) pendingWrites.delete(dir);
+  }).catch(() => undefined);
+  return next;
 }

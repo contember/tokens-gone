@@ -28,6 +28,7 @@
  */
 
 import { existsSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type {
@@ -59,6 +60,7 @@ import {
 
 const CACHE_VERSION = 2;
 const DB_FILE = 'opencode.db';
+const WAL_SUFFIX = '-wal';
 const MAX_PROMPT_CHARS = 200;
 
 type OpenCodeExtra = {
@@ -386,6 +388,44 @@ function addSessionMeta(
   if (Object.keys(meta).length > 0) target[record.sessionId] = meta;
 }
 
+/**
+ * Path, inode, size and mtime of the DB and its WAL: a commit moves an mtime and a
+ * replaced file the inode, so an equal fingerprint lets the scan skip the DB.
+ */
+async function dbFingerprint(dbPath: string): Promise<string | undefined> {
+  const part = async (path: string) => {
+    const s = await stat(path).catch(() => null);
+    return s ? `${s.ino}:${s.size}:${s.mtimeMs}` : '-';
+  };
+  const db = await part(dbPath);
+  if (db === '-') return undefined;
+  return `${dbPath}|${db}|${await part(dbPath + WAL_SUFFIX)}`;
+}
+
+function resultFromCache(
+  cache: { files: Record<string, FileCacheRecord<OpenCodeExtra>> },
+  t0: number,
+): ProviderScanResult {
+  const entries: Entry[] = [];
+  const sessionMeta: Record<string, SessionMeta> = {};
+  const records = Object.values(cache.files);
+  for (const record of records) {
+    for (const e of record.entries) entries.push(e);
+    addSessionMeta(sessionMeta, record);
+  }
+  entries.sort((a, b) => a.t - b.t);
+  return {
+    entries,
+    sessionMeta,
+    stats: {
+      files: records.length,
+      cachedFiles: records.length,
+      parsedLines: 0,
+      tookMs: Math.round(performance.now() - t0),
+    },
+  };
+}
+
 async function scanOpenCode(options: ProviderScanOptions = {}): Promise<ProviderScanResult> {
   const t0 = performance.now();
   const dataDir = options.dataDir ?? defaultDataDir();
@@ -400,6 +440,13 @@ async function scanOpenCode(options: ProviderScanOptions = {}): Promise<Provider
   const cache = useCache
     ? await loadCache<OpenCodeExtra>(cachePath, CACHE_VERSION)
     : { version: CACHE_VERSION, files: {} as Record<string, FileCacheRecord<OpenCodeExtra>> };
+
+  // Taken before reading, so a write that lands mid-scan changes it again
+  // and the next scan re-reads.
+  const source = await dbFingerprint(dbPath);
+  if (useCache && source !== undefined && cache.source === source) {
+    return resultFromCache(cache, t0);
+  }
 
   let db: SqlDatabase;
   try {
@@ -482,8 +529,13 @@ async function scanOpenCode(options: ProviderScanOptions = {}): Promise<Provider
   }
 
   const sessionCount = Object.keys(files).length;
-  if (useCache && (parsedMessages > 0 || sessionCount !== Object.keys(cache.files).length)) {
-    void saveCache(cachePath, { version: CACHE_VERSION, files });
+  if (
+    useCache &&
+    (parsedMessages > 0 ||
+      sessionCount !== Object.keys(cache.files).length ||
+      source !== cache.source)
+  ) {
+    void saveCache(cachePath, { version: CACHE_VERSION, source, files });
   }
 
   entries.sort((a, b) => a.t - b.t);

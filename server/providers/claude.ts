@@ -21,10 +21,8 @@
  */
 
 import { readdir, stat, readFile, open } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
 import { existsSync } from 'node:fs';
-import { createInterface } from 'node:readline';
-import { basename, join, sep } from 'node:path';
+import { basename, dirname, join, sep } from 'node:path';
 import { homedir } from 'node:os';
 import type { Entry, SessionMeta, SessionTranscript, TranscriptEntry } from '../types.ts';
 import type {
@@ -36,10 +34,12 @@ import type {
 import { emptyResult } from './types.ts';
 import {
   decideFileState,
+  JsonlLines,
   listJsonlFiles,
-  loadCache,
+  loadShardedCache,
   pMap,
-  saveCache,
+  saveShardedCache,
+  ShardedCache,
   type FileInfo,
 } from './base.ts';
 import {
@@ -89,8 +89,14 @@ function defaultDataDir(): string {
     : join(homedir(), '.claude', 'projects');
 }
 
+/** Directory holding one cache shard per encoded project dir. */
 function defaultCachePath(): string {
-  return join(homedir(), '.cache', 'tokens-gone', 'cache.json');
+  return join(homedir(), '.cache', 'tokens-gone', 'claude-cache');
+}
+
+/** The single-file cache used before sharding, migrated on first load. */
+function legacyCachePath(cacheDir: string): string {
+  return join(dirname(cacheDir), 'cache.json');
 }
 
 /**
@@ -219,6 +225,7 @@ async function parseFile(
 ): Promise<{
   entries: Entry[];
   lines: number;
+  offset: number;
   sessionId?: string;
   firstPrompt?: string;
   cwd?: string;
@@ -230,9 +237,8 @@ async function parseFile(
   let firstPrompt: string | undefined;
   let cwd: string | undefined;
   let sessionKind: string | undefined;
-  const stream = createReadStream(path, { encoding: 'utf-8', start: fromOffset });
-  const rl = createInterface({ input: stream, crlfDelay: Infinity });
-  for await (const line of rl) {
+  const reader = new JsonlLines(path, fromOffset);
+  for await (const line of reader) {
     lines++;
     if (line.length < 50) continue;
 
@@ -293,7 +299,7 @@ async function parseFile(
       // JSON payload) smaller for the common case.
     });
   }
-  return { entries, lines, sessionId, firstPrompt, cwd, sessionKind };
+  return { entries, lines, offset: reader.endOffset, sessionId, firstPrompt, cwd, sessionKind };
 }
 
 /**
@@ -375,28 +381,215 @@ function sanitizePrompt(s: string | undefined): string | undefined {
   return t;
 }
 
+type ClaudeRecord = FileCacheRecord<ClaudeExtra>;
+
+type FileChange = {
+  kind: 'appended' | 'cold';
+  previous: ClaudeRecord | undefined;
+  record: ClaudeRecord;
+};
+
+/**
+ * Cross-file dedup result kept between scans, so a refresh merges only the
+ * entries of files that changed.
+ */
+type MergeState = {
+  /** Current winner per msgId:reqId. */
+  byHash: Map<string, Entry>;
+  /** Structural keys of the hashless entries already kept. */
+  structural: Set<string>;
+  /** Entries from background mirror sessions; they lose ties. */
+  background: WeakSet<Entry>;
+  /** Deduplicated entries, sorted by time. */
+  sorted: Entry[];
+  /** Project name per encoded dir that the entries are stamped with. */
+  dirNames: Map<string, string>;
+};
+
+type ClaudeState = { cache: ShardedCache<ClaudeExtra>; merge?: MergeState };
+
+const scanStates = new Map<string, Promise<ClaudeState>>();
+
+function claudeState(
+  projectsDir: string,
+  cacheDir: string,
+  useCache: boolean,
+): Promise<ClaudeState> {
+  if (!useCache) return Promise.resolve({ cache: new ShardedCache<ClaudeExtra>() });
+  const key = `${projectsDir}\0${cacheDir}`;
+  let state = scanStates.get(key);
+  if (!state) {
+    state = loadShardedCache<ClaudeExtra>(
+      cacheDir,
+      CACHE_VERSION,
+      legacyCachePath(cacheDir),
+      (path) => projectDirForFile(path, projectsDir),
+    ).then((cache) => ({ cache }));
+    scanStates.set(key, state);
+  }
+  return state;
+}
+
+function structuralKey(e: Entry): string {
+  return `${e.t}|${e.s}|${e.i}|${e.o}|${e.cc}|${e.cr}`;
+}
+
+/**
+ * Same msgId:reqId → the entry with the largest output_tokens wins (the
+ * final chunk of a streamed response); on a tie the foreground session wins
+ * over its background mirror. The remaining tie-breaks make the winner
+ * independent of the order files are merged in.
+ */
+function beats(candidate: Entry, current: Entry, background: WeakSet<Entry>): boolean {
+  if (candidate.o !== current.o) return candidate.o > current.o;
+  const candidateBackground = background.has(candidate);
+  if (candidateBackground !== background.has(current)) return !candidateBackground;
+  if (candidate.t !== current.t) return candidate.t < current.t;
+  return candidate.s < current.s;
+}
+
+function byTime(a: Entry, b: Entry): number {
+  return a.t - b.t;
+}
+
+/** Merge two time-sorted lists; ties keep `a` first. */
+function mergeSorted(a: Entry[], b: Entry[]): Entry[] {
+  const out: Entry[] = new Array(a.length + b.length);
+  let i = 0;
+  let j = 0;
+  let k = 0;
+  while (i < a.length && j < b.length) {
+    out[k++] = b[j]!.t < a[i]!.t ? b[j++]! : a[i++]!;
+  }
+  while (i < a.length) out[k++] = a[i++]!;
+  while (j < b.length) out[k++] = b[j++]!;
+  return out;
+}
+
+/**
+ * Full cross-file dedup over every cached record. Subagent JSONLs replicate
+ * their parent session's API calls, so the same msgId:reqId shows up in
+ * several files; hashless entries fall back to structural dedup.
+ */
+function buildMerge(
+  records: Iterable<ClaudeRecord>,
+  dirOf: (path: string) => string,
+  dirNames: Map<string, string>,
+): MergeState {
+  const merge: MergeState = {
+    byHash: new Map(),
+    structural: new Set(),
+    background: new WeakSet(),
+    sorted: [],
+    dirNames: new Map(dirNames),
+  };
+  const hashless: Entry[] = [];
+  for (const record of records) {
+    const projectName = dirNames.get(dirOf(record.path)) ?? '';
+    const isBackground = record.sessionKind === 'bg';
+    for (const e of record.entries) {
+      e.p = projectName;
+      if (isBackground) merge.background.add(e);
+      if (e.h) {
+        const current = merge.byHash.get(e.h);
+        if (!current || beats(e, current, merge.background)) merge.byHash.set(e.h, e);
+        continue;
+      }
+      const key = structuralKey(e);
+      if (merge.structural.has(key)) continue;
+      merge.structural.add(key);
+      hashless.push(e);
+    }
+  }
+  const sorted: Entry[] = [];
+  merge.byHash.forEach((e) => sorted.push(e));
+  for (const e of hashless) sorted.push(e);
+  sorted.sort(byTime);
+  merge.sorted = sorted;
+  return merge;
+}
+
+/**
+ * Fold the changed files into an existing merge. Only valid when every
+ * change is monotonic: new files, or appended files whose records keep the
+ * old entries apart from ones superseded by a larger streaming chunk.
+ */
+function updateMerge(
+  merge: MergeState,
+  changes: FileChange[],
+  dirOf: (path: string) => string,
+  dirNames: Map<string, string>,
+  recordsByDir: Map<string, ClaudeRecord[]>,
+): void {
+  for (const [dir, name] of dirNames) {
+    if (merge.dirNames.get(dir) === name) continue;
+    for (const record of recordsByDir.get(dir) ?? []) {
+      for (const e of record.entries) e.p = name;
+    }
+    merge.dirNames.set(dir, name);
+  }
+
+  let added: Entry[] = [];
+  const removed = new Set<Entry>();
+  for (const { previous, record } of changes) {
+    const projectName = dirNames.get(dirOf(record.path)) ?? '';
+    const isBackground = record.sessionKind === 'bg';
+    const known = previous ? new Set(previous.entries) : undefined;
+    for (const e of record.entries) {
+      if (known?.has(e)) continue;
+      e.p = projectName;
+      if (isBackground) merge.background.add(e);
+      if (e.h) {
+        const current = merge.byHash.get(e.h);
+        if (current && !beats(e, current, merge.background)) continue;
+        if (current) removed.add(current);
+        merge.byHash.set(e.h, e);
+        added.push(e);
+        continue;
+      }
+      const key = structuralKey(e);
+      if (merge.structural.has(key)) continue;
+      merge.structural.add(key);
+      added.push(e);
+    }
+  }
+  if (added.length === 0 && removed.size === 0) return;
+
+  let base = merge.sorted;
+  if (removed.size > 0) {
+    base = base.filter((e) => !removed.has(e));
+    added = added.filter((e) => !removed.has(e));
+  }
+  added.sort(byTime);
+  merge.sorted = mergeSorted(base, added);
+}
+
+/** A change the incremental merge can't fold in: entries may have disappeared or changed priority. */
+function needsRebuild(change: FileChange): boolean {
+  if (!change.previous) return false;
+  return change.kind === 'cold' || change.previous.sessionKind !== change.record.sessionKind;
+}
+
 async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderScanResult> {
   const t0 = performance.now();
   const projectsDir = options.dataDir ?? defaultDataDir();
-  const cachePath = options.cachePath ?? defaultCachePath();
+  const cacheDir = options.cachePath ?? defaultCachePath();
   const useCache = options.useCache !== false;
   const concurrency = options.concurrency ?? 16;
 
   if (!existsSync(projectsDir)) return emptyResult();
 
-  const [files, sessionMeta] = await Promise.all([
+  const [files, sessionMeta, state] = await Promise.all([
     listJsonlFiles(projectsDir),
     loadSessionMeta(projectsDir),
+    claudeState(projectsDir, cacheDir, useCache),
   ]);
-  const cache = useCache
-    ? await loadCache<ClaudeExtra>(cachePath, CACHE_VERSION)
-    : { version: CACHE_VERSION, files: {} as Record<string, FileCacheRecord<ClaudeExtra>> };
+  const { cache } = state;
+  const dirOf = (path: string) => projectDirForFile(path, projectsDir);
 
   let cachedFiles = 0;
   let parsedLines = 0;
-  const allEntries: Entry[] = [];
-  const entryMirrorPriority = new WeakMap<Entry, number>();
-  const newFiles: Record<string, FileCacheRecord<ClaudeExtra>> = {};
+  const changes: FileChange[] = [];
 
   const fileStats = await pMap(files, concurrency, async (path) => {
     try {
@@ -411,66 +604,67 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
     fileStats.filter((x): x is FileInfo => x !== null),
     concurrency,
     async (info) => {
-      const state = decideFileState<ClaudeExtra>(info, cache.files[info.path]);
+      const previous = cache.get(info.path);
+      const fileState = decideFileState<ClaudeExtra>(info, previous);
 
-      if (state.kind === 'unchanged') {
-        newFiles[info.path] = state.cached;
+      if (fileState.kind === 'unchanged') {
         cachedFiles++;
         return;
       }
 
-      // parseFile pre-stamps every entry's `p` with this value; we overwrite
-      // it below once cwd is known, so any string works here.
+      // parseFile pre-stamps every entry's `p` with this value; the merge
+      // overwrites it once the dir's cwd is known, so any string works here.
       const placeholderName = '';
 
-      if (state.kind === 'appended') {
+      if (fileState.kind === 'appended') {
         // The new tail can complete a streaming response whose earlier chunks
         // are already cached, so we merge then dedup-by-hash again.
-        const parsed = await parseFile(info.path, placeholderName, state.fromOffset);
+        const parsed = await parseFile(info.path, placeholderName, fileState.fromOffset);
         parsedLines += parsed.lines;
-        const merged = dedupByHash([...state.cached.entries, ...parsed.entries]);
-        const record: FileCacheRecord<ClaudeExtra> = {
-          path: info.path,
-          size: info.size,
-          mtimeMs: info.mtimeMs,
-          entries: merged,
-          sessionId: state.cached.sessionId ?? parsed.sessionId,
-          firstPrompt: state.cached.firstPrompt ?? parsed.firstPrompt,
-          cwd: state.cached.cwd ?? parsed.cwd,
-          sessionKind: state.cached.sessionKind ?? parsed.sessionKind,
-        };
-        newFiles[info.path] = record;
+        const cached = fileState.cached;
+        changes.push({
+          kind: 'appended',
+          previous,
+          record: {
+            path: info.path,
+            size: info.size,
+            mtimeMs: info.mtimeMs,
+            offset: parsed.offset,
+            entries: dedupByHash([...cached.entries, ...parsed.entries]),
+            sessionId: cached.sessionId ?? parsed.sessionId,
+            firstPrompt: cached.firstPrompt ?? parsed.firstPrompt,
+            cwd: cached.cwd ?? parsed.cwd,
+            sessionKind: cached.sessionKind ?? parsed.sessionKind,
+          },
+        });
         return;
       }
 
       // Cold or invalidated — parse the whole file and dedup intra-file.
       const parsed = await parseFile(info.path, placeholderName, 0);
       parsedLines += parsed.lines;
-      const deduped = dedupByHash(parsed.entries);
-      const record: FileCacheRecord<ClaudeExtra> = {
-        path: info.path,
-        size: info.size,
-        mtimeMs: info.mtimeMs,
-        entries: deduped,
-        sessionId: parsed.sessionId,
-        firstPrompt: parsed.firstPrompt,
-        cwd: parsed.cwd,
-        sessionKind: parsed.sessionKind,
-      };
-      newFiles[info.path] = record;
+      changes.push({
+        kind: 'cold',
+        previous,
+        record: {
+          path: info.path,
+          size: info.size,
+          mtimeMs: info.mtimeMs,
+          offset: parsed.offset,
+          entries: dedupByHash(parsed.entries),
+          sessionId: parsed.sessionId,
+          firstPrompt: parsed.firstPrompt,
+          cwd: parsed.cwd,
+          sessionKind: parsed.sessionKind,
+        },
+      });
     },
   );
 
-  // Claude Code's `cleanupPeriodDays` (default 30) deletes session JSONLs at
-  // startup. Without this carry-over the next scan would mirror that loss
-  // and historical entries would silently drop out of the dashboard.
-  const onDisk = new Set(files);
-  let preservedDeleted = 0;
-  for (const [path, record] of Object.entries(cache.files)) {
-    if (onDisk.has(path)) continue;
-    newFiles[path] = record;
-    preservedDeleted++;
-  }
+  // Records of files that vanished from disk stay in the cache: Claude Code's
+  // `cleanupPeriodDays` (default 30) deletes session JSONLs at startup, and
+  // dropping their records would silently remove historical entries.
+  for (const change of changes) cache.set(dirOf(change.record.path), change.record);
 
   // Resolve the real project name per encoded dir by pooling cwds across all
   // sibling files. One file with a cwd record is enough to name the whole
@@ -478,79 +672,59 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
   // still get the right label. Falls back to the lossy `-` heuristic only
   // when no file in the dir has surfaced a cwd.
   const dirCwds = new Map<string, string>();
-  const dirFiles = new Map<string, string[]>();
-  for (const [path, rec] of Object.entries(newFiles)) {
-    const dir = projectDirForFile(path, projectsDir);
-    let bucket = dirFiles.get(dir);
+  const recordsByDir = new Map<string, ClaudeRecord[]>();
+  for (const record of cache.records()) {
+    const dir = dirOf(record.path);
+    let bucket = recordsByDir.get(dir);
     if (!bucket) {
       bucket = [];
-      dirFiles.set(dir, bucket);
+      recordsByDir.set(dir, bucket);
     }
-    bucket.push(path);
-    if (rec.cwd && !dirCwds.has(dir)) dirCwds.set(dir, rec.cwd);
+    bucket.push(record);
+    if (record.cwd && !dirCwds.has(dir)) dirCwds.set(dir, record.cwd);
   }
 
   // Backfill cwd for dirs whose records were all written before the cwd
   // field existed in the cache. One peek per unresolved dir (not per file)
   // — cheap, and persisting cwd onto the records means it's a one-shot cost.
-  let backfilledDirs = 0;
   const unresolvedDirs: string[] = [];
-  for (const dir of dirFiles.keys()) {
+  for (const dir of recordsByDir.keys()) {
     if (!dirCwds.has(dir)) unresolvedDirs.push(dir);
   }
   await pMap(unresolvedDirs, concurrency, async (dir) => {
-    const paths = dirFiles.get(dir) ?? [];
-    for (const file of paths) {
-      const cwd = await peekCwd(file);
+    for (const record of recordsByDir.get(dir) ?? []) {
+      const cwd = await peekCwd(record.path);
       if (!cwd) continue;
       dirCwds.set(dir, cwd);
-      const rec = newFiles[file];
-      if (rec) rec.cwd = cwd;
-      backfilledDirs++;
+      record.cwd = cwd;
+      cache.set(dir, record);
       return;
     }
   });
 
   const dirNames = new Map<string, string>();
-  function projectNameFor(path: string): string {
-    const dir = projectDirForFile(path, projectsDir);
-    let name = dirNames.get(dir);
-    if (name !== undefined) return name;
+  for (const dir of recordsByDir.keys()) {
     const cwd = dirCwds.get(dir);
-    name = cwd ? basename(cwd) : fallbackProjectName(dir);
-    dirNames.set(dir, name);
-    return name;
+    dirNames.set(dir, cwd ? basename(cwd) : fallbackProjectName(dir));
   }
 
-  // Now collect entries with the resolved project name. Re-stamp `.p` on
-  // every entry — cached records may carry the old (truncated) value from
-  // before this fix, and freshly parsed entries got a placeholder.
-  for (const [path, record] of Object.entries(newFiles)) {
-    const projectName = projectNameFor(path);
-    for (const e of record.entries) {
-      e.p = projectName;
-      allEntries.push(e);
-      entryMirrorPriority.set(e, record.sessionKind === 'bg' ? 1 : 0);
-    }
+  if (!state.merge || changes.some(needsRebuild)) {
+    state.merge = buildMerge(cache.records(), dirOf, dirNames);
+  } else {
+    updateMerge(state.merge, changes, dirOf, dirNames, recordsByDir);
   }
 
-  if (useCache) {
-    // When nothing was parsed and the file set is unchanged, the in-memory
-    // cache mirrors what's on disk already — skip the (very expensive)
-    // 30MB+ JSON.stringify + write. When there *is* a change, kick the
-    // write off in the background so the API response doesn't block on
-    // disk I/O; `saveCache` updates the in-memory copy synchronously.
-    const fileSetChanged = files.length + preservedDeleted !== Object.keys(cache.files).length;
-    if (parsedLines > 0 || fileSetChanged || backfilledDirs > 0) {
-      void saveCache(cachePath, { version: CACHE_VERSION, files: newFiles });
-    }
+  if (useCache && (cache.dirty.size > 0 || cache.legacyPath)) {
+    // Writes only the shards that changed, in the background, so the API
+    // response doesn't block on serialization and disk I/O.
+    void saveShardedCache(cacheDir, CACHE_VERSION, cache);
   }
 
   // Backfill firstPrompt for any session that wasn't found in Claude's
   // sessions-index.json. The index covers only a fraction of sessions
   // (resumed/explicitly-tracked), so without this fallback most rows
   // would show as "(untitled)".
-  for (const record of Object.values(newFiles)) {
+  for (const record of cache.records()) {
     if (!record.sessionId) continue;
     const prompt = sanitizePrompt(record.firstPrompt);
     if (!prompt) continue;
@@ -562,37 +736,9 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
     }
   }
 
-  // Cross-file dedup: subagent JSONLs replicate their parent session's API
-  // calls. Same msgId:reqId → keep the entry with the largest output_tokens
-  // (the final chunk in a streamed response). Hashless entries fall back to
-  // structural dedup.
-  const byHash = new Map<string, Entry>();
-  const structSeen = new Set<string>();
-  const hashless: Entry[] = [];
-  for (let i = 0; i < allEntries.length; i++) {
-    const e = allEntries[i]!;
-    if (e.h) {
-      const existing = byHash.get(e.h);
-      const preferCanonicalSession =
-        existing !== undefined &&
-        e.o === existing.o &&
-        (entryMirrorPriority.get(e) ?? 0) < (entryMirrorPriority.get(existing) ?? 0);
-      if (!existing || e.o > existing.o || preferCanonicalSession) byHash.set(e.h, e);
-      continue;
-    }
-    const k = `${e.t}|${e.s}|${e.i}|${e.o}|${e.cc}|${e.cr}`;
-    if (structSeen.has(k)) continue;
-    structSeen.add(k);
-    hashless.push(e);
-  }
-
-  const deduped: Entry[] = [];
-  byHash.forEach((v) => deduped.push(v));
-  for (const e of hashless) deduped.push(e);
-  deduped.sort((a, b) => a.t - b.t);
-
   return {
-    entries: deduped,
+    // A copy: the merge state keeps its own list for the next scan.
+    entries: state.merge.sorted.slice(),
     sessionMeta,
     stats: {
       files: files.length,
@@ -609,13 +755,13 @@ async function readClaudeTranscript(
 ): Promise<SessionTranscript> {
   const defaultDir = defaultDataDir();
   const projectsDir = options.dataDir ?? defaultDir;
-  const cachePath = options.cachePath ?? defaultCachePath();
+  const cacheDir = options.cachePath ?? defaultCachePath();
   const concurrency = options.concurrency ?? 16;
   const useCacheIndex =
     options.useCache !== false && (options.cachePath !== undefined || projectsDir === defaultDir);
   if (!existsSync(projectsDir)) return emptyClaudeTranscript(sessionId);
 
-  const files = await transcriptFiles(projectsDir, cachePath, sessionId, useCacheIndex);
+  const files = await transcriptFiles(projectsDir, cacheDir, sessionId, useCacheIndex);
   const streams: SessionTranscript['streams'] = [];
 
   await pMap(files, concurrency, async (path) => {
@@ -657,20 +803,20 @@ async function readClaudeTranscript(
 
 async function transcriptFiles(
   projectsDir: string,
-  cachePath: string,
+  cacheDir: string,
   sessionId: string,
   useCache: boolean,
 ): Promise<string[]> {
   if (useCache) {
-    const cache = await loadCache<ClaudeExtra>(cachePath, CACHE_VERSION);
-    const cachedMatches = Object.values(cache.files).filter((record) => record.sessionId === sessionId);
-    if (cachedMatches.length > 0) {
-      const paths = new Set<string>();
-      for (const record of cachedMatches) {
-        if (existsSync(record.path)) paths.add(record.path);
-      }
-      return [...paths];
+    const { cache } = await claudeState(projectsDir, cacheDir, true);
+    const paths = new Set<string>();
+    let matched = false;
+    for (const record of cache.records()) {
+      if (record.sessionId !== sessionId) continue;
+      matched = true;
+      if (existsSync(record.path)) paths.add(record.path);
     }
+    if (matched) return [...paths];
   }
   return listJsonlFiles(projectsDir);
 }

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -265,6 +265,22 @@ describe('opencode scanner', () => {
     const added = r.entries.find((entry) => entry.h === 'opencode:msg_a4')!;
     expect(added.i).toBe(7);
     expect(added.o).toBe(3);
+  });
+
+  it('skips the database while it and its WAL keep their size and mtime', async () => {
+    const first = await scanOpenCode({ dataDir, cachePath: cache });
+    // An unreadable DB proves the second scan never opens it: chmod leaves
+    // size and mtime alone.
+    const dbPath = join(dataDir, 'opencode.db');
+    await chmod(dbPath, 0o000);
+    try {
+      const second = await scanOpenCode({ dataDir, cachePath: cache });
+      expect(second.entries.length).toBe(first.entries.length);
+      expect(second.sessionMeta).toEqual(first.sessionMeta);
+      expect(second.stats.cachedFiles).toBe(first.stats.files);
+    } finally {
+      await chmod(dbPath, 0o644);
+    }
   });
 });
 

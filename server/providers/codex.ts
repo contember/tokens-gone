@@ -23,8 +23,7 @@
  */
 
 import { stat } from 'node:fs/promises';
-import { createReadStream, existsSync } from 'node:fs';
-import { createInterface } from 'node:readline';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { Entry, SessionMeta, SessionTranscript, TranscriptEntry } from '../types.ts';
@@ -37,6 +36,7 @@ import type {
 import { emptyResult } from './types.ts';
 import {
   decideFileState,
+  JsonlLines,
   listJsonlFiles,
   loadCache,
   pMap,
@@ -120,6 +120,8 @@ function projectNameFromCwd(cwd: string): string {
 type ParsedFile = {
   entries: Entry[];
   lines: number;
+  /** Where the next tail read starts — see `JsonlLines.endOffset`. */
+  offset: number;
   sessionId?: string;
   firstPrompt?: string;
   parentSessionId?: string;
@@ -178,10 +180,9 @@ async function parseFile(
   let agentRole = primed?.agentRole;
   let forkHistoryState = primed?.forkHistoryState;
 
-  const stream = createReadStream(path, { encoding: 'utf-8', start: fromOffset });
-  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+  const reader = new JsonlLines(path, fromOffset);
 
-  for await (const line of rl) {
+  for await (const line of reader) {
     lines++;
     if (line.length < 30) continue;
 
@@ -302,6 +303,7 @@ async function parseFile(
   return {
     entries,
     lines,
+    offset: reader.endOffset,
     sessionId,
     firstPrompt,
     parentSessionId,
@@ -391,6 +393,7 @@ async function scanCodex(options: ProviderScanOptions = {}): Promise<ProviderSca
         const record: FileCacheRecord<CodexExtra> = {
           path: info.path,
           size: info.size,
+          offset: parsed.offset,
           mtimeMs: info.mtimeMs,
           entries: merged,
           sessionId: sessionIdMerged,
@@ -416,6 +419,7 @@ async function scanCodex(options: ProviderScanOptions = {}): Promise<ProviderSca
       const record: FileCacheRecord<CodexExtra> = {
         path: info.path,
         size: info.size,
+        offset: parsed.offset,
         mtimeMs: info.mtimeMs,
         entries: parsed.entries,
         sessionId: parsed.sessionId,

@@ -16,8 +16,7 @@
  */
 
 import { stat } from 'node:fs/promises';
-import { createReadStream, existsSync, readFileSync } from 'node:fs';
-import { createInterface } from 'node:readline';
+import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import type { Entry, SessionMeta, SessionTranscript, TranscriptEntry } from '../types.ts';
@@ -31,6 +30,7 @@ import type {
 import { emptyResult } from './types.ts';
 import {
   decideFileState,
+  JsonlLines,
   listJsonlFiles,
   loadCache,
   pMap,
@@ -74,6 +74,8 @@ type PiExtra = {
 type ParsedFile = {
   entries: Entry[];
   lines: number;
+  /** Where the next tail read starts — see `JsonlLines.endOffset`. */
+  offset: number;
   sessionId?: string;
   firstPrompt?: string;
   summary?: string;
@@ -258,10 +260,9 @@ async function parseFile(
   let summary = primed?.summary;
   let cwd = primed?.cwd;
 
-  const stream = createReadStream(path, { encoding: 'utf-8', start: fromOffset });
-  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+  const reader = new JsonlLines(path, fromOffset);
 
-  for await (const line of rl) {
+  for await (const line of reader) {
     lines++;
     if (line.length < 20) continue;
 
@@ -355,7 +356,7 @@ async function parseFile(
     if (hasTokens || hasCost) entries.push(entry);
   }
 
-  return { entries, lines, sessionId, firstPrompt, summary, projectName, cwd };
+  return { entries, lines, offset: reader.endOffset, sessionId, firstPrompt, summary, projectName, cwd };
 }
 
 async function scanPiJsonl(
@@ -432,6 +433,7 @@ async function scanPiJsonl(
         const record: FileCacheRecord<PiExtra> = {
           path: info.path,
           size: info.size,
+          offset: parsed.offset,
           mtimeMs: info.mtimeMs,
           entries: merged,
           sessionId: sessionIdMerged,
@@ -451,6 +453,7 @@ async function scanPiJsonl(
       const record: FileCacheRecord<PiExtra> = {
         path: info.path,
         size: info.size,
+        offset: parsed.offset,
         mtimeMs: info.mtimeMs,
         entries: parsed.entries,
         sessionId: parsed.sessionId,
