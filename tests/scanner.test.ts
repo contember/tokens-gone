@@ -1,8 +1,19 @@
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { mkdir, mkdtemp, writeFile, appendFile, rm } from 'node:fs/promises';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { _scanClaude as scan } from '../server/providers/claude';
+import type { Entry } from '../server/types';
 import { flushCacheWrites } from '../server/providers/base';
 
 let dir: string;
@@ -59,7 +70,7 @@ function makeLineFixed(msgId: string, reqId: string, over: Record<string, unknow
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), 'ccdash-'));
   projects = join(dir, 'projects');
-  cache = join(dir, 'cache.json');
+  cache = join(dir, 'claude-cache');
   await mkdir(join(projects, '-home-user-projects-foo'), { recursive: true });
   await mkdir(join(projects, '-home-user-projects-bar'), { recursive: true });
 
@@ -337,5 +348,153 @@ describe('scanner', () => {
     expect(r.entries.find((e) => e.m === '<synthetic>')).toBeUndefined();
 
     await rm(synthDir, { recursive: true });
+  });
+});
+
+describe('claude cache', () => {
+  let root: string;
+  let dataDir: string;
+  let cacheDir: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'ccdash-cache-'));
+    dataDir = join(root, 'projects');
+    cacheDir = join(root, 'claude-cache');
+    await mkdir(join(dataDir, '-p-alpha'), { recursive: true });
+    await mkdir(join(dataDir, '-p-beta'), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await flushCacheWrites();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  function usageLine(msgId: string, output: number, over: Record<string, unknown> = {}): string {
+    return makeLineFixed(msgId, `req-${msgId}`, {
+      message: {
+        id: msgId,
+        model: 'claude-sonnet-4-6',
+        usage: {
+          input_tokens: 1,
+          output_tokens: output,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      },
+      ...over,
+    });
+  }
+
+  /** Shard files by the project dir they hold. */
+  async function shardsByKey(): Promise<Map<string, { file: string; mtimeMs: number }>> {
+    const out = new Map<string, { file: string; mtimeMs: number }>();
+    for (const name of await readdir(cacheDir)) {
+      const file = join(cacheDir, name);
+      const shard = JSON.parse(await readFile(file, 'utf-8')) as { key: string };
+      out.set(shard.key, { file, mtimeMs: (await stat(file)).mtimeMs });
+    }
+    return out;
+  }
+
+  function canonical(entries: Entry[]): string[] {
+    return entries.map((e) => `${e.h ?? '-'}|${e.t}|${e.s}|${e.p}|${e.o}`).sort();
+  }
+
+  it('reads a half-written last line once it is complete', async () => {
+    const path = join(dataDir, '-p-alpha', 's.jsonl');
+    const second = usageLine('m-2', 9);
+    await writeFile(path, `${usageLine('m-1', 5)}\n${second.slice(0, 60)}`);
+
+    const first = await scan({ dataDir, cachePath: cacheDir });
+    expect(first.entries.map((e) => e.h)).toEqual(['m-1:req-m-1']);
+
+    await appendFile(path, `${second.slice(60)}\n`);
+    const r = await scan({ dataDir, cachePath: cacheDir });
+    expect(r.entries.map((e) => e.h).sort()).toEqual(['m-1:req-m-1', 'm-2:req-m-2']);
+    expect(r.entries.find((e) => e.h === 'm-2:req-m-2')?.o).toBe(9);
+  });
+
+  it('rewrites only the shard of the project that changed', async () => {
+    const alpha = join(dataDir, '-p-alpha', 'a.jsonl');
+    await writeFile(alpha, `${usageLine('a-1', 1)}\n`);
+    await writeFile(join(dataDir, '-p-beta', 'b.jsonl'), `${usageLine('b-1', 1)}\n`);
+    await scan({ dataDir, cachePath: cacheDir });
+    await flushCacheWrites();
+    const before = await shardsByKey();
+    expect([...before.keys()].sort()).toEqual(['-p-alpha', '-p-beta']);
+
+    await appendFile(alpha, `${usageLine('a-2', 1)}\n`);
+    await scan({ dataDir, cachePath: cacheDir });
+    await flushCacheWrites();
+    const after = await shardsByKey();
+    expect(after.get('-p-alpha')!.mtimeMs).not.toBe(before.get('-p-alpha')!.mtimeMs);
+    expect(after.get('-p-beta')!.mtimeMs).toBe(before.get('-p-beta')!.mtimeMs);
+  });
+
+  it('migrates the single-file cache, keeping records of deleted logs', async () => {
+    const deletedPath = join(dataDir, '-p-alpha', 'deleted.jsonl');
+    const legacy = join(root, 'cache.json');
+    await writeFile(legacy, JSON.stringify({
+      version: 4,
+      files: {
+        [deletedPath]: {
+          path: deletedPath,
+          size: 100,
+          mtimeMs: 1,
+          entries: [{ t: 1, p: '', s: 'sess-gone', m: 'claude-sonnet-4-6', i: 1, o: 2, cc: 0, cr: 0, f: 0, h: 'gone:1' }],
+          sessionId: 'sess-gone',
+          cwd: '/home/user/alpha',
+        },
+      },
+    }));
+    await writeFile(join(dataDir, '-p-beta', 'b.jsonl'), `${usageLine('b-1', 1)}\n`);
+
+    const r = await scan({ dataDir, cachePath: cacheDir });
+    expect(r.entries.find((e) => e.s === 'sess-gone')?.p).toBe('alpha');
+    await flushCacheWrites();
+    expect(await stat(legacy).catch(() => null)).toBeNull();
+
+    // A path the process hasn't loaded yet: the shards are read from disk.
+    const link = join(root, 'claude-cache-link');
+    await symlink(cacheDir, link);
+    const reloaded = await scan({ dataDir, cachePath: link });
+    expect(reloaded.entries.find((e) => e.s === 'sess-gone')?.o).toBe(2);
+    expect(reloaded.stats.parsedLines).toBe(0);
+  });
+
+  it('merges changed files incrementally with the same result as a full scan', async () => {
+    const parent = join(dataDir, '-p-alpha', 'parent.jsonl');
+    await writeFile(parent, [usageLine('m-1', 5), usageLine('m-2', 3)].join('\n') + '\n');
+    await mkdir(join(dataDir, '-p-alpha', 'subagents'), { recursive: true });
+    await writeFile(join(dataDir, '-p-alpha', 'subagents', 'agent.jsonl'), `${usageLine('m-1', 5)}\n`);
+    await writeFile(
+      join(dataDir, '-p-beta', 'bg.jsonl'),
+      `${usageLine('m-3', 4, { sessionId: 'sess-bg', sessionKind: 'bg', cwd: '/home/user/beta' })}\n`,
+    );
+    await scan({ dataDir, cachePath: cacheDir });
+
+    // A larger chunk of m-1, a new call, a foreground copy of the mirrored
+    // m-3 and a hashless call duplicated by the subagent log.
+    const hashless = JSON.stringify({
+      type: 'assistant',
+      timestamp: '2026-04-15T10:05:00Z',
+      sessionId: 'sess-A',
+      message: { model: 'claude-sonnet-4-6', usage: { input_tokens: 2, output_tokens: 2 } },
+    });
+    await appendFile(parent, [usageLine('m-1', 50), usageLine('m-4', 1), hashless].join('\n') + '\n');
+    await appendFile(join(dataDir, '-p-alpha', 'subagents', 'agent.jsonl'), `${hashless}\n`);
+    await writeFile(
+      join(dataDir, '-p-beta', 'fg.jsonl'),
+      `${usageLine('m-3', 4, { sessionId: 'sess-fg', cwd: '/home/user/beta' })}\n`,
+    );
+
+    const incremental = await scan({ dataDir, cachePath: cacheDir });
+    const full = await scan({ dataDir, useCache: false });
+    expect(canonical(incremental.entries)).toEqual(canonical(full.entries));
+    expect(incremental.entries.filter((e) => e.h === 'm-1:req-m-1').map((e) => e.o)).toEqual([50]);
+    expect(incremental.entries.find((e) => e.h === 'm-3:req-m-3')?.s).toBe('sess-fg');
+    expect(incremental.entries.filter((e) => !e.h).length).toBe(1);
+    expect(new Set(incremental.entries.filter((e) => e.s === 'sess-bg' || e.s === 'sess-fg').map((e) => e.p)))
+      .toEqual(new Set(['beta']));
   });
 });
