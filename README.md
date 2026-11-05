@@ -12,8 +12,8 @@ npx tokens-gone
 
 That's it — it builds nothing on your machine, starts a local HTTP server,
 and opens your browser at the dashboard. Subsequent runs reuse the on-disk
-parse caches (`~/.cache/tokens-gone/*.json`), so warm scans are sub-second even
-with thousands of session files.
+parse caches in `~/.cache/tokens-gone/`, so warm scans skip unchanged files
+even with thousands of session files.
 
 ### Flags
 
@@ -53,10 +53,13 @@ LiteLLM pricing every run. tokens-gone is the same idea but:
 
 - `server/providers/*` walk provider-specific JSONL directories, parse logs
   streamingly, and cache parsed entries on disk keyed by `(path, size, mtime)`.
-  Unchanged files are reused verbatim; appended files are tail-parsed. OpenCode
+  Unchanged files are reused verbatim; appended files are tail-parsed from the
+  end of the last complete line. The Claude Code cache is split into one file
+  per project, so a scan rewrites only the projects that changed. OpenCode
   V1 and V2 are the exception: they store sessions in SQLite, so their shared
-  provider reads the DB read-only, deduplicates migrated messages, and caches
-  per session instead of per file.
+  provider reads the DB read-only, deduplicates migrated messages, caches
+  per session instead of per file, and skips the DB entirely while it and its
+  WAL are unchanged.
 - `server/pricing.ts` resolves Anthropic Claude and OpenAI GPT pricing by model
   name, including provider-prefixed and date-suffixed model IDs. It accounts
   for provider-specific caching, tiered pricing, and fast-mode rates.
