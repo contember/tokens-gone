@@ -16,34 +16,43 @@ export type RankedRequest = Omit<Entry, 'h'> & {
   c: number;
 };
 
+/** Entries with their per-request costs when already computed (e.g. by the rollup). */
+export type RequestGroup = {
+  entries: Entry[];
+  costs?: Float64Array;
+};
+
 type ScoredRequest = {
   entry: Entry;
   cost: number;
+  /** Position in iteration order; the last tie-break. */
   index: number;
 };
 
 export function rankRequests(
-  entries: Entry[],
+  groups: Iterable<RequestGroup>,
   filters: RequestFilters,
   limit: number,
-  requestCosts?: Float64Array,
 ): { entries: RankedRequest[]; total: number } {
   limit = Math.max(0, Math.floor(limit));
   const heap: ScoredRequest[] = [];
   let total = 0;
+  let index = 0;
 
-  for (let index = 0; index < entries.length; index++) {
-    const entry = entries[index]!;
-    if (!matchesRequest(entry, filters)) continue;
-    total++;
-    if (limit === 0) continue;
+  for (const { entries, costs } of groups) {
+    for (let k = 0; k < entries.length; k++, index++) {
+      const entry = entries[k]!;
+      if (!matchesRequest(entry, filters)) continue;
+      total++;
+      if (limit === 0) continue;
 
-    const cost = requestCosts?.[index] ?? requestCost(entry);
-    if (heap.length < limit) {
-      pushHeap(heap, { entry, cost, index });
-    } else if (compareValues(cost, entry.t, index, heap[0]!) > 0) {
-      heap[0] = { entry, cost, index };
-      sinkHeap(heap, 0);
+      const cost = costs?.[k] ?? requestCost(entry);
+      if (heap.length < limit) {
+        pushHeap(heap, { entry, cost, index });
+      } else if (compareValues(cost, entry.t, index, heap[0]!) > 0) {
+        heap[0] = { entry, cost, index };
+        sinkHeap(heap, 0);
+      }
     }
   }
 
