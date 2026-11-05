@@ -416,10 +416,9 @@ function isAtLeast(version: ModelVersion | null, major: number, minor: number): 
  * Date-suffixed names are tricky: `opus-4-20250514` is legacy Opus 4 with
  * a release date, NOT "Opus 4.20". Version parts are at most 2 digits and
  * must not be followed by another digit, so 8-digit dates are rejected.
+ *
+ * Memoized: rollups price every request, but only a handful of model ids exist.
  */
-const pricingByModel = new Map<string, ModelPricing | null>();
-
-/** Memoized: rollups price every request, but only a handful of model ids exist. */
 export function getPricing(model: string): ModelPricing | null {
   let pricing = pricingByModel.get(model);
   if (pricing === undefined) {
@@ -428,6 +427,8 @@ export function getPricing(model: string): ModelPricing | null {
   }
   return pricing;
 }
+
+const pricingByModel = new Map<string, ModelPricing | null>();
 
 function resolvePricing(model: string): ModelPricing | null {
   const m = model.toLowerCase();

@@ -12,7 +12,7 @@ import {
 } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { _scanClaude as scan } from '../server/providers/claude';
+import { _readClaudeTranscript as readTranscript, _scanClaude as scan } from '../server/providers/claude';
 import type { Entry } from '../server/types';
 import { flushCacheWrites } from '../server/providers/base';
 
@@ -496,5 +496,66 @@ describe('claude cache', () => {
     expect(incremental.entries.filter((e) => !e.h).length).toBe(1);
     expect(new Set(incremental.entries.filter((e) => e.s === 'sess-bg' || e.s === 'sess-fg').map((e) => e.p)))
       .toEqual(new Set(['beta']));
+  });
+
+  it('rebuilds the merge when a known file is rewritten', async () => {
+    const path = join(dataDir, '-p-alpha', 's.jsonl');
+    await writeFile(path, [usageLine('r-1', 5), usageLine('r-2', 5), usageLine('r-3', 5)].join('\n') + '\n');
+    await writeFile(join(dataDir, '-p-alpha', 'copy.jsonl'), `${usageLine('r-1', 2)}\n`);
+    await scan({ dataDir, cachePath: cacheDir });
+
+    // Shorter than before: the file was replaced, not appended to.
+    await writeFile(path, `${usageLine('r-3', 1, { sessionKind: 'bg' })}\n`);
+    const r = await scan({ dataDir, cachePath: cacheDir });
+    expect(canonical(r.entries)).toEqual(canonical((await scan({ dataDir, useCache: false })).entries));
+    expect(r.entries.find((e) => e.h === 'r-1:req-r-1')?.o).toBe(2);
+    expect(r.entries.find((e) => e.h === 'r-2:req-r-2')).toBeUndefined();
+  });
+
+  it('finishes a migration that a crash interrupted', async () => {
+    const deletedPath = join(dataDir, '-p-alpha', 'deleted.jsonl');
+    const legacyRecord = (o: number) => ({
+      path: deletedPath,
+      size: 100,
+      mtimeMs: 1,
+      entries: [{ t: 1, p: '', s: 'sess-gone', m: 'claude-sonnet-4-6', i: 1, o, cc: 0, cr: 0, f: 0, h: 'gone:1' }],
+      sessionId: 'sess-gone',
+    });
+    const legacy = join(root, 'cache.json');
+    await writeFile(legacy, JSON.stringify({ version: 4, files: { [deletedPath]: legacyRecord(2) } }));
+    // One shard already written by the interrupted run, newer than the legacy copy.
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(
+      join(cacheDir, 'partial.json'),
+      JSON.stringify({ version: 4, key: '-p-alpha', files: { [deletedPath]: legacyRecord(7) } }),
+    );
+    await writeFile(join(cacheDir, 'stale.json.123.tmp'), '{"half":');
+
+    const r = await scan({ dataDir, cachePath: cacheDir });
+    expect(r.entries.find((e) => e.s === 'sess-gone')?.o).toBe(7);
+    await flushCacheWrites();
+    expect(await stat(legacy).catch(() => null)).toBeNull();
+    expect((await readdir(cacheDir)).some((name) => name.endsWith('.tmp'))).toBe(false);
+  });
+
+  it('keeps an unreadable shard aside instead of overwriting it', async () => {
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(join(cacheDir, 'broken.json'), '{"version":4,"key":');
+    await writeFile(join(dataDir, '-p-alpha', 'a.jsonl'), `${usageLine('c-1', 1)}\n`);
+
+    const r = await scan({ dataDir, cachePath: cacheDir });
+    expect(r.entries.length).toBe(1);
+    await flushCacheWrites();
+    expect(await readFile(join(cacheDir, 'broken.json.corrupt'), 'utf-8')).toBe('{"version":4,"key":');
+  });
+
+  it('finds transcript files through the shard cache', async () => {
+    const path = join(dataDir, '-p-alpha', 't.jsonl');
+    await writeFile(path, `${usageLine('t-1', 1, { sessionId: 'sess-T' })}\n`);
+    await scan({ dataDir, cachePath: cacheDir });
+
+    const transcript = await readTranscript('sess-T', { dataDir, cachePath: cacheDir });
+    expect(transcript.missingRaw).toBe(false);
+    expect(transcript.streams.map((stream) => stream.path)).toEqual([join('-p-alpha', 't.jsonl')]);
   });
 });

@@ -3,6 +3,8 @@
  *   - `pMap`   — bounded-concurrency map (ulimit safety on macOS)
  *   - `listJsonlFiles` — recursive walker that yields *.jsonl paths
  *   - `loadCache` / `saveCache` — disk-cache I/O with versioned envelope
+ *   - `loadShardedCache` / `saveShardedCache` — the same, split into shard files
+ *   - `JsonlLines` — line reader that tracks where a tail read resumes
  *
  * Providers also share an "incremental scan" workflow: for each file,
  * decide whether it's unchanged (reuse), appended (parse tail), or
@@ -11,7 +13,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readdir, readFile, writeFile, mkdir, open, rename, unlink } from 'node:fs/promises';
+import { readdir, readFile, mkdir, open, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { CacheFile, FileCacheRecord } from './types.ts';
 
@@ -264,6 +266,19 @@ export class JsonlLines implements AsyncIterable<string> {
   }
 }
 
+/** Best effort: some platforms (Windows) can't open a directory for syncing. */
+async function syncDir(dir: string): Promise<void> {
+  const fh = await open(dir, 'r').catch(() => undefined);
+  if (!fh) return;
+  try {
+    await fh.sync();
+  } catch {
+    // Not supported here; the renames are as durable as the platform allows.
+  } finally {
+    await fh.close();
+  }
+}
+
 function shardFileName(key: string): string {
   return `${createHash('sha1').update(key).digest('hex')}.json`;
 }
@@ -312,10 +327,6 @@ export class ShardedCache<T> {
     for (const shard of this.shards.values()) yield* shard.values();
   }
 
-  get size(): number {
-    return this.shardOfPath.size;
-  }
-
   /** Serialized shard, or undefined when nothing is left in it. */
   serialize(key: string, version: number): string | undefined {
     const shard = this.shards.get(key);
@@ -325,24 +336,38 @@ export class ShardedCache<T> {
   }
 }
 
-const shardedCaches = new Map<string, ShardedCache<unknown>>();
+const shardedCaches = new Map<string, Promise<ShardedCache<unknown>>>();
+
+const TMP_SUFFIX = '.tmp';
 
 /**
  * Load every shard under `dir`, memoized per process like `loadCache`.
- * Unreadable shards and shards of another version are skipped, so their
- * files get re-parsed. When `legacyPath` (the old single-file cache) still
- * exists, its records are migrated first and shards override them: the
- * legacy file is only deleted once every shard has been written.
+ * Shards of another version are skipped and an unparsable shard is renamed
+ * to `*.corrupt`, so their files get re-parsed without overwriting what was
+ * there. When `legacyPath` (the old single-file cache) still exists, its
+ * records are migrated first and shards override them: the legacy file is
+ * only deleted once every shard has been written.
  */
-export async function loadShardedCache<T>(
+export function loadShardedCache<T>(
   dir: string,
   version: number,
   legacyPath: string,
   keyOf: (path: string) => string,
 ): Promise<ShardedCache<T>> {
-  const memo = shardedCaches.get(dir);
-  if (memo) return memo as ShardedCache<T>;
+  let memo = shardedCaches.get(dir);
+  if (!memo) {
+    memo = readShardedCache<T>(dir, version, legacyPath, keyOf);
+    shardedCaches.set(dir, memo);
+  }
+  return memo as Promise<ShardedCache<T>>;
+}
 
+async function readShardedCache<T>(
+  dir: string,
+  version: number,
+  legacyPath: string,
+  keyOf: (path: string) => string,
+): Promise<ShardedCache<T>> {
   const cache = new ShardedCache<T>();
   const legacy = await readLegacyCache<T>(legacyPath, version);
   if (legacy) {
@@ -351,6 +376,10 @@ export async function loadShardedCache<T>(
   }
 
   const names = await readdir(dir).catch(() => [] as string[]);
+  // Left behind by a process that died mid-write.
+  await Promise.all(
+    names.filter((name) => name.endsWith(TMP_SUFFIX)).map((name) => unlink(join(dir, name)).catch(() => undefined)),
+  );
   const shards = await pMap(
     names.filter((name) => name.endsWith('.json')),
     16,
@@ -362,8 +391,6 @@ export async function loadShardedCache<T>(
   }
   // Shards just read match the disk; only a migration leaves work to write.
   if (!legacy) cache.dirty.clear();
-
-  shardedCaches.set(dir, cache as ShardedCache<unknown>);
   return cache;
 }
 
@@ -381,12 +408,27 @@ async function readLegacyCache<T>(path: string, version: number): Promise<CacheF
 async function readShard<T>(path: string, version: number): Promise<ShardFile<T> | undefined> {
   const raw = await readFile(path, 'utf-8').catch(() => null);
   if (raw == null) return undefined;
+  let data: ShardFile<T>;
   try {
-    const data = JSON.parse(raw) as ShardFile<T>;
-    return data?.version === version && typeof data.key === 'string' && data.files ? data : undefined;
+    data = JSON.parse(raw) as ShardFile<T>;
   } catch {
+    await rename(path, `${path}.corrupt`).catch(() => undefined);
     return undefined;
   }
+  return data?.version === version && typeof data.key === 'string' && data.files ? data : undefined;
+}
+
+/** Write via a synced temp file and rename, so a crash leaves the old or the new content. */
+async function writeFileAtomic(path: string, body: string): Promise<void> {
+  const tmp = `${path}.${process.pid}${TMP_SUFFIX}`;
+  const fh = await open(tmp, 'w');
+  try {
+    await fh.writeFile(body);
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+  await rename(tmp, path);
 }
 
 /**
@@ -419,15 +461,15 @@ export function saveShardedCache<T>(dir: string, version: number, cache: Sharded
             await unlink(path).catch(() => undefined);
             continue;
           }
-          const tmp = `${path}.${process.pid}.tmp`;
-          await writeFile(tmp, body);
-          await rename(tmp, path);
+          await writeFileAtomic(path, body);
         } catch {
           cache.dirty.add(key);
           failed = true;
         }
       }
       if (!failed && cache.legacyPath) {
+        // The renames must be durable before the only other copy goes away.
+        await syncDir(dir);
         await unlink(cache.legacyPath).catch(() => undefined);
         cache.legacyPath = undefined;
       }

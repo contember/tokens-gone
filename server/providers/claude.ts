@@ -408,24 +408,23 @@ type MergeState = {
 
 type ClaudeState = { cache: ShardedCache<ClaudeExtra>; merge?: MergeState };
 
-const scanStates = new Map<string, ClaudeState>();
+const scanStates = new Map<string, Promise<ClaudeState>>();
 
-async function claudeState(
+function claudeState(
   projectsDir: string,
   cacheDir: string,
   useCache: boolean,
 ): Promise<ClaudeState> {
-  if (!useCache) return { cache: new ShardedCache<ClaudeExtra>() };
+  if (!useCache) return Promise.resolve({ cache: new ShardedCache<ClaudeExtra>() });
   const key = `${projectsDir}\0${cacheDir}`;
   let state = scanStates.get(key);
   if (!state) {
-    const cache = await loadShardedCache<ClaudeExtra>(
+    state = loadShardedCache<ClaudeExtra>(
       cacheDir,
       CACHE_VERSION,
       legacyCachePath(cacheDir),
       (path) => projectDirForFile(path, projectsDir),
-    );
-    state = { cache };
+    ).then((cache) => ({ cache }));
     scanStates.set(key, state);
   }
   return state;
@@ -438,11 +437,15 @@ function structuralKey(e: Entry): string {
 /**
  * Same msgId:reqId → the entry with the largest output_tokens wins (the
  * final chunk of a streamed response); on a tie the foreground session wins
- * over its background mirror.
+ * over its background mirror. The remaining tie-breaks make the winner
+ * independent of the order files are merged in.
  */
 function beats(candidate: Entry, current: Entry, background: WeakSet<Entry>): boolean {
   if (candidate.o !== current.o) return candidate.o > current.o;
-  return background.has(current) && !background.has(candidate);
+  const candidateBackground = background.has(candidate);
+  if (candidateBackground !== background.has(current)) return !candidateBackground;
+  if (candidate.t !== current.t) return candidate.t < current.t;
+  return candidate.s < current.s;
 }
 
 function byTime(a: Entry, b: Entry): number {

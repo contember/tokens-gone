@@ -389,14 +389,13 @@ function addSessionMeta(
 }
 
 /**
- * Path, size and mtime of the DB and its WAL. Every committed write changes one of
- * them, so an equal fingerprint means the cached sessions are still current
- * and the per-session message count over the whole DB can be skipped.
+ * Path, inode, size and mtime of the DB and its WAL: a commit moves an mtime and a
+ * replaced file the inode, so an equal fingerprint lets the scan skip the DB.
  */
 async function dbFingerprint(dbPath: string): Promise<string | undefined> {
   const part = async (path: string) => {
     const s = await stat(path).catch(() => null);
-    return s ? `${s.size}:${s.mtimeMs}` : '-';
+    return s ? `${s.ino}:${s.size}:${s.mtimeMs}` : '-';
   };
   const db = await part(dbPath);
   if (db === '-') return undefined;
