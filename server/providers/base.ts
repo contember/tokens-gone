@@ -13,8 +13,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readdir, readFile, mkdir, open, rename, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { readdir, readFile, mkdir, open, rename, unlink } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import type { CacheFile, FileCacheRecord } from './types.ts';
 
 /**
@@ -93,6 +93,7 @@ export async function loadCache<T>(
   if (cached && cached.version === expectedVersion) {
     return cached as CacheFile<T>;
   }
+  await removeStaleTempFiles(cachePath);
   try {
     const raw = await readFile(cachePath, 'utf-8').catch(() => null);
     if (raw == null) {
@@ -139,14 +140,14 @@ export async function saveCache<T>(cachePath: string, cache: CacheFile<T>): Prom
     .catch(() => undefined)
     .then(async () => {
       await mkdir(dirname(cachePath), { recursive: true });
-      await writeFile(cachePath, JSON.stringify(cache));
+      await writeFileAtomic(cachePath, JSON.stringify(cache));
     });
   pendingWrites.set(cachePath, next);
   // Clean up the map once this write is done so the Map doesn't pin
   // outdated promises forever.
   next.finally(() => {
     if (pendingWrites.get(cachePath) === next) pendingWrites.delete(cachePath);
-  });
+  }).catch(() => undefined);
   await next;
 }
 
@@ -416,6 +417,35 @@ async function readShard<T>(path: string, version: number): Promise<ShardFile<T>
     return undefined;
   }
   return data?.version === version && typeof data.key === 'string' && data.files ? data : undefined;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM: the process exists but belongs to another user.
+    return err instanceof Error && 'code' in err && err.code === 'EPERM';
+  }
+}
+
+/**
+ * Remove temp files that a killed `writeFileAtomic` left next to `path`.
+ * Temp files of a live process (another dashboard or a `report` run sharing
+ * the cache) are kept: deleting one would fail that process's rename.
+ */
+async function removeStaleTempFiles(path: string): Promise<void> {
+  const dir = dirname(path);
+  const prefix = `${basename(path)}.`;
+  const names = await readdir(dir).catch(() => [] as string[]);
+  await Promise.all(
+    names.map(async (name) => {
+      if (!name.startsWith(prefix) || !name.endsWith(TMP_SUFFIX)) return;
+      const pid = Number(name.slice(prefix.length, -TMP_SUFFIX.length));
+      if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid || isProcessAlive(pid)) return;
+      await unlink(join(dir, name)).catch(() => undefined);
+    }),
+  );
 }
 
 /** Write via a synced temp file and rename, so a crash leaves the old or the new content. */
