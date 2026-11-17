@@ -83,7 +83,8 @@ function parseTime(flag: string, value: string, endOfDay: boolean): number {
     const d = new Date(midnight);
     return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
   }
-  if (!DATE.test(value) && ISO_TIME.test(value)) {
+  // Date.parse rolls impossible dates over (02-30 → 03-02), so check the date part first.
+  if (!DATE.test(value) && ISO_TIME.test(value) && localMidnight(value.slice(0, 10)) !== undefined) {
     const t = Date.parse(value);
     if (Number.isFinite(t)) return t;
   }
@@ -311,6 +312,11 @@ export async function runReport(argv: string[]): Promise<number> {
     printError(args.format, 'scan', err instanceof Error ? err.message : String(err));
     return 1;
   }
+  // A reader that stops early (`| head`) closes the pipe; that is not a failure.
+  process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EPIPE') process.exit(0);
+    throw err;
+  });
   process.stdout.write(renderReport(report, args.format));
   return 0;
 }

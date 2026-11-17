@@ -438,13 +438,15 @@ function structuralKey(e: Entry): string {
  * Same msgId:reqId → the entry with the largest output_tokens wins (the
  * final chunk of a streamed response); on a tie the foreground session wins
  * over its background mirror. The remaining tie-breaks make the winner
- * independent of the order files are merged in.
+ * independent of the order files are merged in; a subagent log that copies
+ * its parent's request loses to the parent's own copy.
  */
 function beats(candidate: Entry, current: Entry, background: WeakSet<Entry>): boolean {
   if (candidate.o !== current.o) return candidate.o > current.o;
   const candidateBackground = background.has(candidate);
   if (candidateBackground !== background.has(current)) return !candidateBackground;
   if (candidate.t !== current.t) return candidate.t < current.t;
+  if ((candidate.a === undefined) !== (current.a === undefined)) return candidate.a === undefined;
   return candidate.s < current.s;
 }
 
@@ -773,15 +775,17 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
   // Backfill firstPrompt for any session that wasn't found in Claude's
   // sessions-index.json. The index covers only a fraction of sessions
   // (resumed/explicitly-tracked), so without this fallback most rows
-  // would show as "(untitled)". The cwd comes from the same records.
+  // would show as "(untitled)". The cwd comes from the same records, or from
+  // the dir when an older record has none.
   for (const record of cache.records()) {
     if (!record.sessionId) continue;
     const prompt = sanitizePrompt(record.firstPrompt);
-    if (!prompt && !record.cwd) continue;
+    const cwd = record.cwd ?? dirCwds.get(dirOf(record.path));
+    if (!prompt && !cwd) continue;
     const meta = sessionMeta[record.sessionId] ?? {};
     sessionMeta[record.sessionId] = meta;
     if (prompt && !meta.firstPrompt) meta.firstPrompt = prompt;
-    if (record.cwd && !meta.cwd) meta.cwd = record.cwd;
+    if (cwd && !meta.cwd) meta.cwd = cwd;
   }
 
   return {

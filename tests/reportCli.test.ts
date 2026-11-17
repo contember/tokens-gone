@@ -143,6 +143,7 @@ describe('parseReportArgs', () => {
 
   it('rejects bad input', () => {
     expect(() => parseReportArgs(['--since', '2026-02-30'], false)).toThrow('--since');
+    expect(() => parseReportArgs(['--since', '2026-02-30T10:00'], false)).toThrow('--since');
     expect(() => parseReportArgs(['--group-by', 'week'], false)).toThrow('--group-by');
     expect(() => parseReportArgs(['--provider', 'claude'], false)).toThrow('unknown provider');
     expect(() => parseReportArgs(['--since', '2026-11-17', '--until', '2026-11-16'], false)).toThrow('before');

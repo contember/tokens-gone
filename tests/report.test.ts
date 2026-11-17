@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { _scanClaude as scanClaude } from '../server/providers/claude';
 import { flushCacheWrites } from '../server/providers/base';
 import { costBreakdownForEntry } from '../server/pricing';
-import { buildReport, type ReportOptions, type SessionRow } from '../server/report';
+import { buildReport, type ReportOptions, type ReportRow, type SessionRow } from '../server/report';
 import { rollupEntries } from '../server/rollup';
 import type { Entry, SessionMeta } from '../server/types';
 
@@ -100,6 +100,11 @@ afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+function sessionRow(row: ReportRow | undefined): SessionRow {
+  if (!row || !('sessionId' in row)) throw new Error('expected a session row');
+  return row;
+}
+
 const SESSION: ReportOptions = { groupBy: 'session', projects: [], providers: [] };
 
 async function scanFixture(): Promise<{ entries: Entry[]; sessionMeta: Record<string, SessionMeta> }> {
@@ -135,7 +140,7 @@ describe('report per session (Claude fixture logs)', () => {
     const report = buildReport(entries, sessionMeta, SESSION);
     expect(report.rows.length).toBe(2);
 
-    const main = report.rows[0] as SessionRow;
+    const main = sessionRow(report.rows[0]);
     expect(main.sessionId).toBe('sess-main');
     expect(main.provider).toBe('cc');
     expect(main.project).toBe('app');
@@ -167,7 +172,7 @@ describe('report per session (Claude fixture logs)', () => {
     expect(main.costUsd.total).toBeCloseTo(expectedCost, 6);
     expect(main.costUsd.total).toBeGreaterThan(0);
 
-    const lib = report.rows[1] as SessionRow;
+    const lib = sessionRow(report.rows[1]);
     expect(lib.sessionId).toBe('sess-lib');
     expect(lib.subagents).toEqual([]);
     expectRowsSumToTotals(report);
@@ -193,10 +198,10 @@ describe('report per session (Claude fixture logs)', () => {
     const windowed = buildReport(entries, sessionMeta, { ...SESSION, since, until });
     expect(windowed.rows.length).toBe(1);
     expect(windowed.totals.requests).toBe(2);
-    expect((windowed.rows[0] as SessionRow).subagents[0]?.requests).toBe(2);
+    expect(sessionRow(windowed.rows[0]).subagents[0]?.requests).toBe(2);
 
     const byCwd = buildReport(entries, sessionMeta, { ...SESSION, projects: ['WORK/'] });
-    expect(byCwd.rows.map((r) => (r as SessionRow).sessionId)).toEqual(['sess-lib']);
+    expect(byCwd.rows.map((r) => sessionRow(r).sessionId)).toEqual(['sess-lib']);
 
     const codexOnly = buildReport(entries, sessionMeta, { ...SESSION, providers: ['codex'] });
     expect(codexOnly.rows).toEqual([]);
@@ -234,7 +239,7 @@ describe('report with subagents logged as their own sessions', () => {
       fork: { parentSessionId: 'parent', threadSource: 'user' },
     };
     const report = buildReport(entries, meta, SESSION);
-    const rows = report.rows as SessionRow[];
+    const rows = report.rows.map(sessionRow);
     expect(rows.map((r) => r.sessionId)).toEqual(['parent', 'fork']);
     expect(rows[0]!.requests).toBe(3);
     expect(rows[0]!.title).toBe('Plan the release');
