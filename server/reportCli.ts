@@ -313,9 +313,9 @@ export async function runReport(argv: string[]): Promise<number> {
     return 1;
   }
   // A reader that stops early (`| head`) closes the pipe; that is not a failure.
+  // No process.exit here: the scan's background cache writes must finish.
   process.stdout.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EPIPE') process.exit(0);
-    throw err;
+    if (err.code !== 'EPIPE') throw err;
   });
   process.stdout.write(renderReport(report, args.format));
   return 0;
