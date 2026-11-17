@@ -39,7 +39,7 @@ The bar is what makes one cost number tell a story. A single $1,121 is opaque; t
 | Default | Replaced with |
 |---|---|
 | 8-card KPI grid at top | Single hero stat (`$10,687.85` large mono) + decomposition strip on the right |
-| Date preset button toolbar | Breadcrumb-style filter chips ("All time › Opus 4.7 › webmaster"), date selection in a popover from the range chip |
+| Date preset button toolbar | Breadcrumb-style filter chips ("All time › Opus 4.7 › my-app"), date selection in a popover from the range chip |
 | Filter chips section | Inline breadcrumbs above hero + `+ model` / `+ project` searchable popover dropdowns |
 | Cost-only table columns | Rows with decomposition mini-bar + background fill = % of grand total |
 
