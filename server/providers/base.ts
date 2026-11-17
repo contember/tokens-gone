@@ -13,8 +13,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readdir, readFile, mkdir, open, rename, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { readdir, readFile, mkdir, open, rename, stat, unlink } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import type { CacheFile, FileCacheRecord } from './types.ts';
 
 /**
@@ -93,6 +93,7 @@ export async function loadCache<T>(
   if (cached && cached.version === expectedVersion) {
     return cached as CacheFile<T>;
   }
+  await removeStaleTempFiles(cachePath);
   try {
     const raw = await readFile(cachePath, 'utf-8').catch(() => null);
     if (raw == null) {
@@ -130,7 +131,8 @@ const pendingWrites = new Map<string, Promise<void>>();
  * resolves only once *this* save has hit disk — but callers who care
  * about response latency more than write durability can run it in the
  * background via `void saveCache(...)` and rely on the in-memory
- * mirror until next time.
+ * mirror until next time. It never rejects: a failed write is logged and
+ * leaves the previous cache file in place.
  */
 export async function saveCache<T>(cachePath: string, cache: CacheFile<T>): Promise<void> {
   inMemoryCache.set(cachePath, cache as CacheFile<unknown>);
@@ -139,15 +141,19 @@ export async function saveCache<T>(cachePath: string, cache: CacheFile<T>): Prom
     .catch(() => undefined)
     .then(async () => {
       await mkdir(dirname(cachePath), { recursive: true });
-      await writeFile(cachePath, JSON.stringify(cache));
+      await writeFileAtomic(cachePath, JSON.stringify(cache));
     });
   pendingWrites.set(cachePath, next);
   // Clean up the map once this write is done so the Map doesn't pin
   // outdated promises forever.
   next.finally(() => {
     if (pendingWrites.get(cachePath) === next) pendingWrites.delete(cachePath);
-  });
-  await next;
+  }).catch(() => undefined);
+  try {
+    await next;
+  } catch (err) {
+    console.warn(`tokens-gone: could not write cache ${cachePath}:`, err);
+  }
 }
 
 /**
@@ -418,17 +424,59 @@ async function readShard<T>(path: string, version: number): Promise<ShardFile<T>
   return data?.version === version && typeof data.key === 'string' && data.files ? data : undefined;
 }
 
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM: the process exists but belongs to another user.
+    return err instanceof Error && 'code' in err && err.code === 'EPERM';
+  }
+}
+
+/** Older than any real write takes; a live writer's pid may have been reused. */
+const STALE_TEMP_MS = 60 * 60_000;
+
+/**
+ * Remove temp files that a killed `writeFileAtomic` left next to `path`.
+ * Recent temp files of a live process (another dashboard or a `report` run
+ * sharing the cache) are kept: deleting one would fail that process's rename.
+ */
+async function removeStaleTempFiles(path: string): Promise<void> {
+  const dir = dirname(path);
+  const prefix = `${basename(path)}.`;
+  const names = await readdir(dir).catch((): string[] => []);
+  await Promise.all(
+    names.map(async (name) => {
+      if (!name.startsWith(prefix) || !name.endsWith(TMP_SUFFIX)) return;
+      const pid = Number(name.slice(prefix.length, -TMP_SUFFIX.length));
+      if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) return;
+      const file = join(dir, name);
+      if (isProcessAlive(pid)) {
+        const info = await stat(file).catch(() => undefined);
+        if (!info || Date.now() - info.mtimeMs < STALE_TEMP_MS) return;
+      }
+      await unlink(file).catch(() => undefined);
+    }),
+  );
+}
+
 /** Write via a synced temp file and rename, so a crash leaves the old or the new content. */
 async function writeFileAtomic(path: string, body: string): Promise<void> {
   const tmp = `${path}.${process.pid}${TMP_SUFFIX}`;
-  const fh = await open(tmp, 'w');
   try {
-    await fh.writeFile(body);
-    await fh.sync();
-  } finally {
-    await fh.close();
+    const fh = await open(tmp, 'w');
+    try {
+      await fh.writeFile(body);
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
+    await rename(tmp, path);
+  } catch (err) {
+    await unlink(tmp).catch(() => undefined);
+    throw err;
   }
-  await rename(tmp, path);
 }
 
 /**

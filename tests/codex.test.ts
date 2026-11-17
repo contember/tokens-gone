@@ -317,3 +317,70 @@ describe('codex scanner', () => {
     expect(entries[0]!.o).toBe(100);
   });
 });
+
+describe('codex incremental scan', () => {
+  let root: string;
+
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), 'ccdash-codex-inc-'));
+  });
+
+  afterAll(async () => {
+    await flushCacheWrites();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('gives the same entries and session meta as a cold parse after appended lines', async () => {
+    const sessions = join(root, 'sessions');
+    const day = join(sessions, '2026', '05', '02');
+    await mkdir(day, { recursive: true });
+    const cachePath = join(root, 'cache.json');
+    const metaFirst = join(day, 'rollout-meta-first.jsonl');
+    const partialMeta = join(day, 'rollout-partial-meta.jsonl');
+
+    const metaLine = sessionLine({ id: '019de4a1-0000-7000-8000-000000000001', cwd: '/home/user/projects/alpha' });
+    // Session metadata and the model arrive before the first scan, usage only after it.
+    await writeFile(metaFirst, [metaLine, turnContextLine('gpt-5.5'), userMsgLine('hello')].join('\n') + '\n');
+    // The first scan sees half of the session_meta line.
+    const partialLine = sessionLine({ id: '019de4a1-0000-7000-8000-000000000002', cwd: '/home/user/projects/beta' });
+    await writeFile(partialMeta, partialLine.slice(0, 40));
+
+    const first = await scanCodex({ dataDir: sessions, cachePath });
+    expect(first.entries.length).toBe(0);
+
+    const subdirTurn = JSON.stringify({
+      timestamp: '2026-05-02T10:00:01.000Z',
+      type: 'turn_context',
+      payload: { turn_id: 't2', cwd: '/home/user/projects/alpha/packages/web', model: 'gpt-5.6-sol' },
+    });
+    await appendFile(
+      metaFirst,
+      [
+        tokenCountLine({ input_tokens: 100, cached_input_tokens: 40, output_tokens: 10 }, undefined, '2026-05-02T10:00:00.000Z'),
+        subdirTurn,
+        tokenCountLine({ input_tokens: 200, cached_input_tokens: 80, output_tokens: 20 }, undefined, '2026-05-02T10:00:02.000Z'),
+      ].join('\n') + '\n',
+    );
+    await appendFile(
+      partialMeta,
+      partialLine.slice(40) + '\n' + [
+        turnContextLine('gpt-5.5', '2026-05-02T11:00:00.000Z'),
+        userMsgLine('second session', '2026-05-02T11:00:00.100Z'),
+        tokenCountLine({ input_tokens: 300, cached_input_tokens: 0, output_tokens: 30 }, undefined, '2026-05-02T11:00:01.000Z'),
+      ].join('\n') + '\n',
+    );
+
+    const incremental = await scanCodex({ dataDir: sessions, cachePath });
+    // Only the appended lines of each file were read.
+    expect(incremental.stats.parsedLines).toBe(3 + 4);
+    const cold = await scanCodex({ dataDir: sessions, useCache: false });
+
+    expect(incremental.entries).toEqual(cold.entries);
+    expect(incremental.sessionMeta).toEqual(cold.sessionMeta);
+    expect(cold.entries.map((e) => [e.p, e.m])).toEqual([
+      ['alpha', 'gpt-5.5'],
+      ['alpha', 'gpt-5.6-sol'],
+      ['beta', 'gpt-5.5'],
+    ]);
+  });
+});

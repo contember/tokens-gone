@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Filters as F, Harness, UsageRow } from '../types';
 import { HARNESS_LABELS, entryHarness } from '../types';
 import { modelShort } from '../format';
+import { localDayStart } from '../dates';
 
 const USAGE_BUCKET_MS = 5 * 60_000;
 
@@ -230,7 +231,7 @@ function DatePopover({
               onChange={(e) =>
                 setFilters({
                   ...filters,
-                  from: e.target.value ? new Date(e.target.value).getTime() : null,
+                  from: localDayStart(e.target.value),
                 })
               }
               style={{ flex: 1 }}
@@ -242,7 +243,7 @@ function DatePopover({
               onChange={(e) =>
                 setFilters({
                   ...filters,
-                  to: e.target.value ? new Date(e.target.value).getTime() + 86400000 : null,
+                  to: localDayStart(e.target.value, 1),
                 })
               }
               style={{ flex: 1 }}
