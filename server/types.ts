@@ -37,6 +37,11 @@ export type Entry = {
    * filtering in the UI.
    */
   src?: 'cc' | 'codex' | 'opencode' | 'pi' | 'omp';
+  /**
+   * Subagent (sidechain) transcript that made the request, when the provider
+   * logs it under the parent session id. Absent for the session's own requests.
+   */
+  a?: string;
   /** Explicit USD cost components from providers that log authoritative cost. */
   ci?: number;
   co?: number;
@@ -57,6 +62,8 @@ export type SessionMeta = {
   threadSource?: 'main' | 'subagent' | string;
   agentNickname?: string;
   agentRole?: string;
+  /** Working directory the session ran in, when the provider records it. */
+  cwd?: string;
 };
 
 export type TranscriptProvider = 'cc' | 'codex' | 'opencode' | 'pi' | 'omp';

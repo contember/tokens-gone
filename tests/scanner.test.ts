@@ -431,6 +431,37 @@ describe('claude cache', () => {
     expect(after.get('-p-beta')!.mtimeMs).toBe(before.get('-p-beta')!.mtimeMs);
   });
 
+  it('marks subagent transcripts by path, including cached records of deleted logs', async () => {
+    const goneSubagent = join(dataDir, '-p-alpha', 'sess-old', 'subagents', 'agent-gone.jsonl');
+    const legacy = join(root, 'cache.json');
+    await writeFile(legacy, JSON.stringify({
+      version: 4,
+      files: {
+        [goneSubagent]: {
+          path: goneSubagent,
+          size: 100,
+          mtimeMs: 1,
+          entries: [{ t: 1, p: '', s: 'sess-old', m: 'claude-sonnet-4-6', i: 1, o: 2, cc: 0, cr: 0, f: 0, h: 'old:1' }],
+          sessionId: 'sess-old',
+          cwd: '/home/user/alpha',
+        },
+      },
+    }));
+    await mkdir(join(dataDir, '-p-beta', 'sess-new', 'subagents'), { recursive: true });
+    await writeFile(join(dataDir, '-p-beta', 'sess-new.jsonl'), `${usageLine('main-1', 1, { sessionId: 'sess-new' })}\n`);
+    await writeFile(
+      join(dataDir, '-p-beta', 'sess-new', 'subagents', 'agent-x1.jsonl'),
+      `${usageLine('sub-1', 1, { sessionId: 'sess-new', isSidechain: true, agentId: 'x1' })}\n`,
+    );
+
+    const r = await scan({ dataDir, cachePath: cacheDir });
+    const agentOf = (h: string) => r.entries.find((e) => e.h === h)?.a;
+    expect(agentOf('old:1')).toBe('gone');
+    expect(agentOf('sub-1:req-sub-1')).toBe('x1');
+    expect(agentOf('main-1:req-main-1')).toBeUndefined();
+    expect(r.sessionMeta['sess-old']?.cwd).toBe('/home/user/alpha');
+  });
+
   it('migrates the single-file cache, keeping records of deleted logs', async () => {
     const deletedPath = join(dataDir, '-p-alpha', 'deleted.jsonl');
     const legacy = join(root, 'cache.json');

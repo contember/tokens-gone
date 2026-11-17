@@ -163,6 +163,7 @@ describe('pi scanner', () => {
     expect(r.sessionMeta[sessionId]).toEqual({
       summary: 'Build Pi support',
       firstPrompt: 'first Pi prompt',
+      cwd: '/home/me/projects/tokens-gone',
     });
   });
 

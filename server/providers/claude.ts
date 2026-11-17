@@ -467,18 +467,35 @@ function mergeSorted(a: Entry[], b: Entry[]): Entry[] {
 }
 
 /**
- * Stamp the resolved project name onto `entries[k]`. Entries already
- * returned from a scan must never change (the server diffs entry lists by
- * identity), so those get a copy; entries parsed in this scan are written in place.
+ * Agent id of a subagent transcript: `<session>/subagents/agent-<id>.jsonl`,
+ * or `agent-<id>.jsonl` next to the sessions in older Claude Code versions.
+ * Read from the path, so cached records need no re-parse.
  */
-function stampProject(entries: Entry[], k: number, name: string, fresh: WeakSet<Entry>): Entry {
+function subagentOf(path: string): string | undefined {
+  return /(?:^|[\\/])agent-([^\\/]+)\.jsonl$/.exec(path)?.[1];
+}
+
+/**
+ * Stamp the resolved project name and subagent id onto `entries[k]`. Entries
+ * already returned from a scan must never change (the server diffs entry
+ * lists by identity), so those get a copy; entries parsed in this scan are
+ * written in place.
+ */
+function stampEntry(
+  entries: Entry[],
+  k: number,
+  name: string,
+  agent: string | undefined,
+  fresh: WeakSet<Entry>,
+): Entry {
   const e = entries[k]!;
-  if (e.p === name) return e;
+  if (e.p === name && e.a === agent) return e;
   if (fresh.has(e)) {
     e.p = name;
+    e.a = agent;
     return e;
   }
-  const stamped = { ...e, p: name };
+  const stamped = { ...e, p: name, a: agent };
   entries[k] = stamped;
   return stamped;
 }
@@ -514,9 +531,10 @@ function buildMerge(
   const hashless: Entry[] = [];
   for (const record of records) {
     const projectName = dirNames.get(dirOf(record.path)) ?? '';
+    const agent = subagentOf(record.path);
     const isBackground = record.sessionKind === 'bg';
     for (let k = 0; k < record.entries.length; k++) {
-      const e = stampProject(record.entries, k, projectName, fresh);
+      const e = stampEntry(record.entries, k, projectName, agent, fresh);
       if (isBackground) merge.background.add(e);
       if (e.h) {
         const current = merge.byHash.get(e.h);
@@ -555,10 +573,11 @@ function updateMerge(
   const removed = new Set<Entry>();
   for (const { record } of changes) {
     const projectName = dirNames.get(dirOf(record.path)) ?? '';
+    const agent = subagentOf(record.path);
     const isBackground = record.sessionKind === 'bg';
     for (let k = 0; k < record.entries.length; k++) {
       if (!fresh.has(record.entries[k]!)) continue;
-      const e = stampProject(record.entries, k, projectName, fresh);
+      const e = stampEntry(record.entries, k, projectName, agent, fresh);
       if (isBackground) merge.background.add(e);
       if (e.h) {
         const current = merge.byHash.get(e.h);
@@ -754,17 +773,15 @@ async function scanClaude(options: ProviderScanOptions = {}): Promise<ProviderSc
   // Backfill firstPrompt for any session that wasn't found in Claude's
   // sessions-index.json. The index covers only a fraction of sessions
   // (resumed/explicitly-tracked), so without this fallback most rows
-  // would show as "(untitled)".
+  // would show as "(untitled)". The cwd comes from the same records.
   for (const record of cache.records()) {
     if (!record.sessionId) continue;
     const prompt = sanitizePrompt(record.firstPrompt);
-    if (!prompt) continue;
-    const existing = sessionMeta[record.sessionId];
-    if (!existing) {
-      sessionMeta[record.sessionId] = { firstPrompt: prompt };
-    } else if (!existing.firstPrompt) {
-      existing.firstPrompt = prompt;
-    }
+    if (!prompt && !record.cwd) continue;
+    const meta = sessionMeta[record.sessionId] ?? {};
+    sessionMeta[record.sessionId] = meta;
+    if (prompt && !meta.firstPrompt) meta.firstPrompt = prompt;
+    if (record.cwd && !meta.cwd) meta.cwd = record.cwd;
   }
 
   return {

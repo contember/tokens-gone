@@ -207,9 +207,10 @@ function addSessionMeta(
   sessionId: string | undefined,
   summary: string | undefined,
   firstPrompt: string | undefined,
+  cwd: string | undefined,
 ): void {
-  if (!sessionId || (!summary && !firstPrompt)) return;
-  sessionMeta[sessionId] = { summary, firstPrompt };
+  if (!sessionId || (!summary && !firstPrompt && !cwd)) return;
+  sessionMeta[sessionId] = { summary, firstPrompt, cwd };
 }
 
 function dedupKey(e: Entry): string {
@@ -411,6 +412,7 @@ async function scanPiJsonl(
           state.cached.sessionId,
           state.cached.summary,
           state.cached.firstPrompt,
+          state.cached.cwd,
         );
         return;
       }
@@ -444,7 +446,7 @@ async function scanPiJsonl(
         };
         newFiles[info.path] = record;
         for (const e of merged) allEntries.push(e);
-        addSessionMeta(sessionMeta, sessionIdMerged, summaryMerged, firstPromptMerged);
+        addSessionMeta(sessionMeta, sessionIdMerged, summaryMerged, firstPromptMerged, cwdMerged);
         return;
       }
 
@@ -464,7 +466,7 @@ async function scanPiJsonl(
       };
       newFiles[info.path] = record;
       for (const e of parsed.entries) allEntries.push(e);
-      addSessionMeta(sessionMeta, parsed.sessionId, parsed.summary, parsed.firstPrompt);
+      addSessionMeta(sessionMeta, parsed.sessionId, parsed.summary, parsed.firstPrompt, parsed.cwd);
     },
   );
 

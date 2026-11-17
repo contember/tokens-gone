@@ -71,6 +71,7 @@ type CodexExtra = {
   threadSource?: string;
   agentNickname?: string;
   agentRole?: string;
+  cwd?: string;
   forkHistoryState?: ForkHistoryState;
 };
 
@@ -95,6 +96,10 @@ function codexSessionMeta(record: CodexExtra): SessionMeta | undefined {
   }
   if (record.agentRole) {
     meta.agentRole = record.agentRole;
+    hasAny = true;
+  }
+  if (record.cwd) {
+    meta.cwd = record.cwd;
     hasAny = true;
   }
   return hasAny ? meta : undefined;
@@ -128,6 +133,7 @@ type ParsedFile = {
   threadSource?: string;
   agentNickname?: string;
   agentRole?: string;
+  cwd?: string;
   forkHistoryState?: ForkHistoryState;
 };
 
@@ -165,6 +171,7 @@ async function parseFile(
     threadSource?: string;
     agentNickname?: string;
     agentRole?: string;
+    cwd?: string;
     forkHistoryState?: ForkHistoryState;
   },
 ): Promise<ParsedFile> {
@@ -178,6 +185,7 @@ async function parseFile(
   let threadSource = primed?.threadSource;
   let agentNickname = primed?.agentNickname;
   let agentRole = primed?.agentRole;
+  let cwd = primed?.cwd;
   let forkHistoryState = primed?.forkHistoryState;
 
   const reader = new JsonlLines(path, fromOffset);
@@ -231,6 +239,7 @@ async function parseFile(
       if (!projectName && typeof payload.cwd === 'string') {
         projectName = projectNameFromCwd(payload.cwd);
       }
+      if (!cwd && typeof payload.cwd === 'string' && payload.cwd) cwd = payload.cwd;
       continue;
     }
 
@@ -245,6 +254,7 @@ async function parseFile(
       if (!projectName && typeof payload.cwd === 'string') {
         projectName = projectNameFromCwd(payload.cwd);
       }
+      if (!cwd && typeof payload.cwd === 'string' && payload.cwd) cwd = payload.cwd;
       continue;
     }
 
@@ -310,6 +320,7 @@ async function parseFile(
     threadSource,
     agentNickname,
     agentRole,
+    cwd,
     forkHistoryState,
   };
 }
@@ -379,6 +390,7 @@ async function scanCodex(options: ProviderScanOptions = {}): Promise<ProviderSca
           threadSource: state.cached.threadSource,
           agentNickname: state.cached.agentNickname,
           agentRole: state.cached.agentRole,
+          cwd: state.cached.cwd,
           forkHistoryState: state.cached.forkHistoryState,
           currentModel: lastCachedEntry?.m,
         });
@@ -402,6 +414,7 @@ async function scanCodex(options: ProviderScanOptions = {}): Promise<ProviderSca
           threadSource: threadSourceMerged,
           agentNickname: agentNicknameMerged,
           agentRole: agentRoleMerged,
+          cwd: state.cached.cwd ?? parsed.cwd,
           forkHistoryState: parsed.forkHistoryState,
         };
         newFiles[info.path] = record;
@@ -428,6 +441,7 @@ async function scanCodex(options: ProviderScanOptions = {}): Promise<ProviderSca
         threadSource: parsed.threadSource,
         agentNickname: parsed.agentNickname,
         agentRole: parsed.agentRole,
+        cwd: parsed.cwd,
         forkHistoryState: parsed.forkHistoryState,
       };
       newFiles[info.path] = record;
