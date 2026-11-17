@@ -21,6 +21,7 @@ import { extname, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { PROVIDERS, type Provider, type ProviderScanStats } from './providers/index.ts';
+import { scanProviders, type ProviderInfo, type ProvidersScan } from './scan.ts';
 import { markTranscriptUsageOwnership } from './providers/transcript.ts';
 import { loadPromptDays, type PromptDay } from './promptHistory.ts';
 import { createStyle } from './ansi.ts';
@@ -35,15 +36,6 @@ import { renderUsageSummary, summarizeUsage } from './summary.ts';
 import { rankRequests, type RequestHarness } from './requests.ts';
 import type { Entry, SessionMeta, UsageRow } from './types.ts';
 import { UsageIndex } from './usageIndex.ts';
-
-type ProviderInfo = {
-  id: Provider['id'];
-  label: string;
-  dataDir: string;
-  cachePath: string;
-  detected: boolean;
-  stats: ProviderScanStats;
-};
 
 type Cache = {
   /** Number of per-request entries in the index. */
@@ -113,13 +105,6 @@ function sendJson(
   res.end(body);
 }
 
-const EMPTY_STATS: ProviderScanStats = {
-  files: 0,
-  cachedFiles: 0,
-  parsedLines: 0,
-  tookMs: 0,
-};
-
 // Heatmap renders ~365 days; load a bit more so monthly view boundaries
 // have headroom and the first run doesn't truncate just-recent activity.
 const PROMPT_HISTORY_WINDOW_DAYS = 400;
@@ -128,10 +113,7 @@ const PROMPT_HISTORY_WINDOW_DAYS = 400;
 // is a superset at any time of day and any DST shift.
 const SUMMARY_WINDOW_MS = 31 * 86400000;
 
-type ScanResult = Omit<Cache, 'generatedAt' | 'rows' | 'requests'> & {
-  /** Each provider's entries, sorted by time. */
-  lists: Map<Provider['id'], Entry[]>;
-};
+type ScanResult = ProvidersScan & { promptActivity: PromptDay[] };
 
 async function runScan(): Promise<ScanResult> {
   const promptFromMs = Date.now() - PROMPT_HISTORY_WINDOW_DAYS * 86400000;
@@ -140,59 +122,6 @@ async function runScan(): Promise<ScanResult> {
     loadPromptDays({ fromMs: promptFromMs }).catch(() => [] as PromptDay[]),
   ]);
   return { ...providerResults, promptActivity };
-}
-
-/**
- * Scan every detected provider in parallel and merge. Undetected providers
- * still appear in the result with empty stats so the UI can show "Codex:
- * not detected" without special-casing.
- */
-async function scanProviders(): Promise<Omit<ScanResult, 'promptActivity'>> {
-  const results = await Promise.all(
-    PROVIDERS.map(async (p) => {
-      const dataDir = p.defaultDataDir();
-      const cachePath = p.defaultCachePath();
-      const detected = p.detect(dataDir);
-      if (!detected) {
-        return {
-          info: { id: p.id, label: p.label, dataDir, cachePath, detected, stats: EMPTY_STATS },
-          entries: [] as Entry[],
-          sessionMeta: {} as Record<string, SessionMeta>,
-        };
-      }
-      const r = await p.scan();
-      return {
-        info: { id: p.id, label: p.label, dataDir, cachePath, detected, stats: r.stats },
-        entries: r.entries,
-        sessionMeta: r.sessionMeta,
-      };
-    }),
-  );
-
-  const lists = new Map<Provider['id'], Entry[]>();
-  let sessionMeta: Record<string, SessionMeta> = {};
-  const providers: ProviderInfo[] = [];
-  for (const r of results) {
-    providers.push(r.info);
-    lists.set(r.info.id, r.entries);
-    // Session ID spaces don't collide in practice (all UUIDs), so a simple
-    // spread merge is fine. Later providers win on collision, which is
-    // intentional: it's how we'd preserve a provider's own labels over a
-    // stale Claude-side entry if we ever shared IDs.
-    sessionMeta = { ...sessionMeta, ...r.sessionMeta };
-  }
-
-  const stats = providers.reduce<ProviderScanStats>(
-    (acc, p) => ({
-      files: acc.files + p.stats.files,
-      cachedFiles: acc.cachedFiles + p.stats.cachedFiles,
-      parsedLines: acc.parsedLines + p.stats.parsedLines,
-      tookMs: Math.max(acc.tookMs, p.stats.tookMs),
-    }),
-    { ...EMPTY_STATS },
-  );
-
-  return { lists, sessionMeta, stats, providers };
 }
 
 export type StartOptions = {
