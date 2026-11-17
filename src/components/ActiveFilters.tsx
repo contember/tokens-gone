@@ -7,7 +7,7 @@ const USAGE_BUCKET_MS = 5 * 60_000;
 
 /**
  * Active filters rendered as breadcrumbs at the top of the view —
- * "All time · Opus 4.7 · webmaster". Each segment is a clickable chip
+ * "All time · Opus 4.7 · my-app". Each segment is a clickable chip
  * that removes itself; the base ("All time"/"7d"/etc) opens a date popover.
  * Replaces the chip-soup filters panel.
  */

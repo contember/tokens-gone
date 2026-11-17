@@ -16,7 +16,7 @@ function sessionLine(over: Record<string, unknown> = {}): string {
     payload: {
       id: '019dd89f-c5c5-7a92-be2d-39ad099e042a',
       timestamp: '2026-04-29T09:44:02.869Z',
-      cwd: '/home/me/projects/external/chutoo/chutoo-monorepo',
+      cwd: '/home/user/projects/example',
       originator: 'codex-tui',
       cli_version: '0.125.0',
       source: 'cli',
@@ -30,7 +30,7 @@ function turnContextLine(model: string, ts = '2026-04-29T09:45:45.779Z'): string
   return JSON.stringify({
     timestamp: ts,
     type: 'turn_context',
-    payload: { turn_id: 't1', cwd: '/home/me/projects/external/chutoo/chutoo-monorepo', model, effort: 'medium' },
+    payload: { turn_id: 't1', cwd: '/home/user/projects/example', model, effort: 'medium' },
   });
 }
 
@@ -146,7 +146,7 @@ describe('codex scanner', () => {
     const e1 = r.entries[0]!;
     expect(e1.src).toBe('codex');
     expect(e1.m).toBe('gpt-5.5');
-    expect(e1.p).toBe('chutoo-monorepo');
+    expect(e1.p).toBe('example');
     expect(e1.s).toBe('019dd89f-c5c5-7a92-be2d-39ad099e042a');
     // i = input_tokens - cached_input_tokens (non-cached portion)
     expect(e1.i).toBe(13875 - 6528);
@@ -261,7 +261,7 @@ describe('codex scanner', () => {
       parentSessionId: parentId,
       threadSource: 'subagent',
       agentNickname: 'Lorentz',
-      cwd: expect.stringMatching(/^\/home\/me\/projects\//),
+      cwd: '/home/user/projects/example',
     });
   });
 
