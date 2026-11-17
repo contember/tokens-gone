@@ -13,7 +13,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readdir, readFile, mkdir, open, rename, unlink } from 'node:fs/promises';
+import { readdir, readFile, mkdir, open, rename, stat, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import type { CacheFile, FileCacheRecord } from './types.ts';
 
@@ -131,7 +131,8 @@ const pendingWrites = new Map<string, Promise<void>>();
  * resolves only once *this* save has hit disk — but callers who care
  * about response latency more than write durability can run it in the
  * background via `void saveCache(...)` and rely on the in-memory
- * mirror until next time.
+ * mirror until next time. It never rejects: a failed write is logged and
+ * leaves the previous cache file in place.
  */
 export async function saveCache<T>(cachePath: string, cache: CacheFile<T>): Promise<void> {
   inMemoryCache.set(cachePath, cache as CacheFile<unknown>);
@@ -148,7 +149,11 @@ export async function saveCache<T>(cachePath: string, cache: CacheFile<T>): Prom
   next.finally(() => {
     if (pendingWrites.get(cachePath) === next) pendingWrites.delete(cachePath);
   }).catch(() => undefined);
-  await next;
+  try {
+    await next;
+  } catch (err) {
+    console.warn(`tokens-gone: could not write cache ${cachePath}:`, err);
+  }
 }
 
 /**
@@ -429,21 +434,29 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+/** Older than any real write takes; a live writer's pid may have been reused. */
+const STALE_TEMP_MS = 60 * 60_000;
+
 /**
  * Remove temp files that a killed `writeFileAtomic` left next to `path`.
- * Temp files of a live process (another dashboard or a `report` run sharing
- * the cache) are kept: deleting one would fail that process's rename.
+ * Recent temp files of a live process (another dashboard or a `report` run
+ * sharing the cache) are kept: deleting one would fail that process's rename.
  */
 async function removeStaleTempFiles(path: string): Promise<void> {
   const dir = dirname(path);
   const prefix = `${basename(path)}.`;
-  const names = await readdir(dir).catch(() => [] as string[]);
+  const names = await readdir(dir).catch((): string[] => []);
   await Promise.all(
     names.map(async (name) => {
       if (!name.startsWith(prefix) || !name.endsWith(TMP_SUFFIX)) return;
       const pid = Number(name.slice(prefix.length, -TMP_SUFFIX.length));
-      if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid || isProcessAlive(pid)) return;
-      await unlink(join(dir, name)).catch(() => undefined);
+      if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) return;
+      const file = join(dir, name);
+      if (isProcessAlive(pid)) {
+        const info = await stat(file).catch(() => undefined);
+        if (!info || Date.now() - info.mtimeMs < STALE_TEMP_MS) return;
+      }
+      await unlink(file).catch(() => undefined);
     }),
   );
 }
@@ -451,14 +464,19 @@ async function removeStaleTempFiles(path: string): Promise<void> {
 /** Write via a synced temp file and rename, so a crash leaves the old or the new content. */
 async function writeFileAtomic(path: string, body: string): Promise<void> {
   const tmp = `${path}.${process.pid}${TMP_SUFFIX}`;
-  const fh = await open(tmp, 'w');
   try {
-    await fh.writeFile(body);
-    await fh.sync();
-  } finally {
-    await fh.close();
+    const fh = await open(tmp, 'w');
+    try {
+      await fh.writeFile(body);
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
+    await rename(tmp, path);
+  } catch (err) {
+    await unlink(tmp).catch(() => undefined);
+    throw err;
   }
-  await rename(tmp, path);
 }
 
 /**

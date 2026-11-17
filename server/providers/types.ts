@@ -67,8 +67,8 @@ export interface Provider {
 /**
  * Shape every per-file cache record extends. Each provider can add
  * format-specific fields via the `TExtra` type parameter (Claude tracks
- * `firstPrompt` and `sessionId`, Codex tracks the same plus could grow
- * a `lastModel` for tail-parse priming).
+ * `firstPrompt` and `sessionId`, Codex its whole parser state, which
+ * primes the tail parse).
  */
 export type FileCacheRecord<TExtra = unknown> = {
   path: string;

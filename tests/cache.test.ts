@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { afterAll, beforeAll, describe, expect, it, spyOn } from 'bun:test';
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { flushCacheWrites, loadCache, saveCache } from '../server/providers/base';
@@ -45,6 +45,20 @@ describe('provider cache file', () => {
     expect((await readdir(join(dir, 'killed'))).sort()).toEqual(['cache.json', `cache.json.${process.ppid}.tmp`]);
   });
 
+  it('removes an old temp file even when its pid now belongs to a running process', async () => {
+    const cachePath = join(dir, 'reused', 'cache.json');
+    await mkdir(join(dir, 'reused'));
+    await writeFile(cachePath, JSON.stringify(previous));
+    const reused = `${cachePath}.${process.ppid}.tmp`;
+    await writeFile(reused, '{');
+    const twoHoursAgo = new Date(Date.now() - 2 * 3600_000);
+    await utimes(reused, twoHoursAgo, twoHoursAgo);
+
+    await loadCache(cachePath, 1);
+
+    expect(await readdir(join(dir, 'reused'))).toEqual(['cache.json']);
+  });
+
   it('never writes the cache file in place', async () => {
     const cachePath = join(dir, 'failed', 'cache.json');
     await mkdir(join(dir, 'failed'));
@@ -52,7 +66,14 @@ describe('provider cache file', () => {
     // Make the temp file unwritable so the write fails before the rename.
     await mkdir(`${cachePath}.${process.pid}.tmp`);
 
-    await expect(saveCache(cachePath, { version: 1, files: {} })).rejects.toThrow();
+    const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      // Background callers do not await it, so a failure must not reject.
+      await saveCache(cachePath, { version: 1, files: {} });
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
 
     expect(JSON.parse(await readFile(cachePath, 'utf-8'))).toEqual(previous);
   });
