@@ -216,12 +216,14 @@ describe('opencode scanner', () => {
       summary: 'Add OpenCode support',
       firstPrompt: 'add OpenCode to the dashboard',
       agentRole: 'build',
+      cwd: '/home/me/projects/tokens-gone',
     });
     expect(r.sessionMeta[childId]).toEqual({
       summary: 'explore the repo',
       parentSessionId: sessionId,
       threadSource: 'subagent',
       agentRole: 'explore',
+      cwd: '/home/me/projects/tokens-gone',
     });
   });
 
@@ -412,6 +414,7 @@ describe('opencode V2', () => {
         summary: 'Native V2',
         firstPrompt: 'native prompt',
         agentRole: 'review',
+        cwd: '/home/me/projects/tokens-gone',
       });
 
       const transcript = await readOpenCodeTranscript('ses_migrated', { dataDir: v2DataDir });

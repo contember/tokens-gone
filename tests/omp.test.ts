@@ -81,6 +81,7 @@ describe('Oh My Pi provider', () => {
     expect(result.sessionMeta[sessionId]).toEqual({
       summary: 'Add Oh My Pi support',
       firstPrompt: 'support omp',
+      cwd: '/home/me/projects/tokens-gone',
     });
   });
 

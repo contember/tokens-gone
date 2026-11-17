@@ -70,6 +70,7 @@ type OpenCodeExtra = {
   firstPrompt?: string;
   parentSessionId?: string;
   agentRole?: string;
+  cwd?: string;
 };
 
 type SessionRow = {
@@ -385,6 +386,7 @@ function addSessionMeta(
     meta.threadSource = 'subagent';
   }
   if (record.agentRole) meta.agentRole = record.agentRole;
+  if (record.cwd) meta.cwd = record.cwd;
   if (Object.keys(meta).length > 0) target[record.sessionId] = meta;
 }
 
@@ -519,6 +521,7 @@ async function scanOpenCode(options: ProviderScanOptions = {}): Promise<Provider
         firstPrompt: firstPrompt(legacyPrompts, v2Prompts, session.id),
         parentSessionId: session.parentId,
         agentRole: parsed.agentRole,
+        cwd: session.directory || undefined,
       };
       files[session.id] = record;
       for (const e of parsed.entries) entries.push(e);

@@ -1,10 +1,12 @@
 /**
  * `npx tokens-gone` entry point. Parses minimal CLI flags, starts the server,
  * and (unless --no-open) opens the user's default browser to the dashboard.
+ * `tokens-gone report` prints a usage report instead (see ./reportCli.ts).
  * The shebang is injected by esbuild's banner during build.
  */
 
 import { spawn } from 'node:child_process';
+import { runReport } from './reportCli.ts';
 import { startServer } from './server.ts';
 import { VERSION } from './version.ts';
 
@@ -15,7 +17,8 @@ type Args = {
 
 const HELP = `tokens-gone — local AI coding agent usage dashboard
 
-Usage: tokens-gone [options]
+Usage: tokens-gone [options]           Start the dashboard
+       tokens-gone report [options]    Print a usage report (see report --help)
 
 Options:
   -p, --port <n>   Port to listen on (default 27821, or $PORT)
@@ -97,16 +100,25 @@ function openInBrowser(url: string): void {
   }
 }
 
-const args = parseArgs(process.argv.slice(2));
-hideSqliteExperimentalWarning();
-const running = await startServer({ port: args.port });
-if (args.open) {
-  openInBrowser(running.url);
+async function serve(argv: string[]): Promise<void> {
+  const args = parseArgs(argv);
+  const running = await startServer({ port: args.port });
+  if (args.open) {
+    openInBrowser(running.url);
+  }
+
+  process.on('SIGINT', () => {
+    running.close().finally(() => process.exit(0));
+  });
+  process.on('SIGTERM', () => {
+    running.close().finally(() => process.exit(0));
+  });
 }
 
-process.on('SIGINT', () => {
-  running.close().finally(() => process.exit(0));
-});
-process.on('SIGTERM', () => {
-  running.close().finally(() => process.exit(0));
-});
+const argv = process.argv.slice(2);
+hideSqliteExperimentalWarning();
+if (argv[0] === 'report') {
+  process.exitCode = await runReport(argv.slice(1));
+} else {
+  await serve(argv);
+}

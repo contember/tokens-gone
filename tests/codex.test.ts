@@ -261,6 +261,7 @@ describe('codex scanner', () => {
       parentSessionId: parentId,
       threadSource: 'subagent',
       agentNickname: 'Lorentz',
+      cwd: expect.stringMatching(/^\/home\/me\/projects\//),
     });
   });
 
