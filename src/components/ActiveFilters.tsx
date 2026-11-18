@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Filters as F, Harness, UsageRow } from '../types';
 import { HARNESS_LABELS, entryHarness } from '../types';
 import { modelShort } from '../format';
-import { localDayRange, parseLocalDate } from '../dates';
+import { localDayRange, parseLocalDate, startOfLocalDay } from '../dates';
 
 const USAGE_BUCKET_MS = 5 * 60_000;
 
@@ -159,7 +159,7 @@ function describeRange(f: F): string {
     });
   };
   if (f.from !== null && f.to !== null) {
-    const end = f.to === startOfDay(f.to) ? f.to - 1 : f.to;
+    const end = f.to === startOfLocalDay(f.to) ? f.to - 1 : f.to;
     return `${fmt(f.from)} – ${fmt(end)}`;
   }
   if (f.from !== null) return `since ${fmt(f.from)}`;
@@ -194,8 +194,8 @@ function DatePopover({
       return;
     }
     const now = Date.now();
-    const today = startOfDay(now);
-    const from = days === 0 ? today : startOfDay(now - (days - 1) * 86400000);
+    const today = startOfLocalDay(now);
+    const from = days === 0 ? today : startOfLocalDay(now - (days - 1) * 86400000);
     setFilters({ ...filters, from, to: null });
     setOpen(false);
   }
@@ -342,12 +342,6 @@ function MultiSelect({
       )}
     </div>
   );
-}
-
-function startOfDay(ms: number): number {
-  const d = new Date(ms);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
 }
 
 function isoFromMs(ms: number): string {
