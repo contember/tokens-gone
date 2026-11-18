@@ -12,6 +12,7 @@ import {
   type Totals,
 } from './aggregate';
 import { fmtMoney } from './format';
+import { localDayRange, selectedLocalDay, shiftLocalDay } from './dates';
 import { ActiveFilters } from './components/ActiveFilters';
 import { ActivityHeatmap, type HeatmapMode } from './components/ActivityHeatmap';
 import { BreakdownTable } from './components/BreakdownTable';
@@ -187,10 +188,8 @@ function Dashboard({
   const [heatmapMode, setHeatmapMode] = useState<HeatmapMode>('cost');
 
   const yearWindow = useMemo(() => {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const today = todayStart.getTime();
-    return { from: today - 364 * 86400000, to: today + 86400000 };
+    const now = Date.now();
+    return { from: shiftLocalDay(now, -364), to: shiftLocalDay(now, 1) };
   }, []);
 
   // Heatmap always covers a full year ending today. Date filters are
@@ -246,17 +245,16 @@ function Dashboard({
   const burn = useMemo(() => recentBurn(filtered), [filtered]);
 
   // Currently-selected single-day filter — used to ring the heatmap cell.
-  const selectedDayMs = useMemo<number | null>(() => {
-    if (filters.from === null || filters.to === null) return null;
-    if (filters.to - filters.from !== 86400000) return null;
-    return filters.from;
-  }, [filters]);
+  const selectedDayMs = useMemo<number | null>(
+    () => selectedLocalDay(filters.from, filters.to),
+    [filters.from, filters.to],
+  );
 
   function toggleDay(dayMs: number | null) {
     if (dayMs === null) {
       setFilters({ ...filters, from: null, to: null });
     } else {
-      setFilters({ ...filters, from: dayMs, to: dayMs + 86400000 });
+      setFilters({ ...filters, ...localDayRange(dayMs) });
     }
   }
 

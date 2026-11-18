@@ -11,6 +11,7 @@
 import type { UsageRow, Filters, PromptDay, SessionMeta } from './types.ts';
 import { entryHarness } from './types.ts';
 import { rowCost } from './pricing.ts';
+import { shiftLocalDay, startOfLocalDay } from './dates.ts';
 
 export type Totals = {
   count: number;
@@ -260,8 +261,9 @@ export function estimateMissingActivity(
   fromMs: number,
   toMs: number,
 ): MissingActivity {
-  const fromDay = startOfDay(fromMs);
-  const toDay = startOfDay(toMs - 1);
+  const fromDay = startOfLocalDay(fromMs);
+  const toDay = startOfLocalDay(toMs - 1);
+  const toEnd = shiftLocalDay(toDay, 1);
 
   // (date, project) → cost from session entries.
   const costByDateProject = new Map<string, number>();
@@ -272,7 +274,7 @@ export function estimateMissingActivity(
   const knownSessions = new Set<string>();
   for (const e of entries) {
     if (e.s) knownSessions.add(e.s);
-    if (e.t < fromDay || e.t >= toDay + 86400000) continue;
+    if (e.t < fromDay || e.t >= toEnd) continue;
     const date = dayKey(e.t);
     const c = rowCost(e);
     if (c === 0) continue;
@@ -391,7 +393,7 @@ export function promptDaysToHeatmap(
     });
   }
   const out: HeatmapDay[] = [];
-  for (let d = startOfDay(from); d <= startOfDay(to - 1); d += 86400000) {
+  for (let d = startOfLocalDay(from); d <= startOfLocalDay(to - 1); d = shiftLocalDay(d, 1)) {
     const k = isoDateFromMs(d);
     out.push(
       map.get(k) ?? {
@@ -454,10 +456,10 @@ export function daily(entries: UsageRow[], from?: number, to?: number): DayStat[
   // the explicit [from, to] window or the data's own extent.
   const sorted = [...map.values()].sort((a, b) => a.ms - b.ms);
   if (sorted.length === 0) return [];
-  const first = from != null ? startOfDay(from) : sorted[0]!.ms;
-  const last = to != null ? startOfDay(to - 1) : sorted[sorted.length - 1]!.ms;
+  const first = from != null ? startOfLocalDay(from) : sorted[0]!.ms;
+  const last = to != null ? startOfLocalDay(to - 1) : sorted[sorted.length - 1]!.ms;
   const out: DayStat[] = [];
-  for (let d = first; d <= last; d += 86400000) {
+  for (let d = first; d <= last; d = shiftLocalDay(d, 1)) {
     const k = isoDateFromMs(d);
     out.push(
       map.get(k) ?? {
@@ -471,12 +473,6 @@ export function daily(entries: UsageRow[], from?: number, to?: number): DayStat[
     );
   }
   return out;
-}
-
-function startOfDay(ms: number): number {
-  const d = new Date(ms);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
 }
 
 function isoDateFromMs(ms: number): string {
@@ -531,7 +527,7 @@ export function activityStats(days: DayStat[]): ActivityStats {
 
   // Current streak: walk back from the most recent day. Today with 0 cost
   // is "not yet active" not "broken" — so we skip it.
-  const today = startOfDay(Date.now());
+  const today = startOfLocalDay(Date.now());
   let i = days.length - 1;
   if (days[i] && days[i]!.ms === today && days[i]!.count === 0) i--;
   while (i >= 0 && days[i]!.count > 0) {

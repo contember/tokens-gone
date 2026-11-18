@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Filters as F, Harness, UsageRow } from '../types';
 import { HARNESS_LABELS, entryHarness } from '../types';
 import { modelShort } from '../format';
-import { localDayStart } from '../dates';
+import { localDayRange, parseLocalDate } from '../dates';
 
 const USAGE_BUCKET_MS = 5 * 60_000;
 
@@ -228,24 +228,20 @@ function DatePopover({
             <input
               type="date"
               value={filters.from ? isoFromMs(filters.from) : ''}
-              onChange={(e) =>
-                setFilters({
-                  ...filters,
-                  from: localDayStart(e.target.value),
-                })
-              }
+              onChange={(e) => {
+                const day = parseLocalDate(e.target.value);
+                setFilters({ ...filters, from: day === null ? null : localDayRange(day).from });
+              }}
               style={{ flex: 1 }}
             />
             <span className="muted">→</span>
             <input
               type="date"
               value={filters.to ? isoFromMs(filters.to - 1) : ''}
-              onChange={(e) =>
-                setFilters({
-                  ...filters,
-                  to: localDayStart(e.target.value, 1),
-                })
-              }
+              onChange={(e) => {
+                const day = parseLocalDate(e.target.value);
+                setFilters({ ...filters, to: day === null ? null : localDayRange(day).to });
+              }}
               style={{ flex: 1 }}
             />
           </div>
